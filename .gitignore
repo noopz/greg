@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files
+.env
+.env.local
+
+# Runtime agent data (contains personal info, session state, conversations)
+agent-data/memories/
+agent-data/relationships/
+agent-data/session.json
+agent-data/transcripts/
+agent-data/compaction-summaries/
+agent-data/meme-archive/
+agent-data/game-updates/
+
+# Keep the template files but not the content
+!agent-data/learned-patterns.md
+!agent-data/persona.md
+
+# Logs
+*.log
+logs/
+
+# Task tracking (local development state)
+qask/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
