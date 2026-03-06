@@ -1,80 +1,32 @@
 /**
- * Idle Behavior System for Greg
+ * Idle Behavior System
  *
  * Triggers periodic reflection and self-improvement when idle.
- * Gives Greg time to think, research, and improve when not chatting.
+ * Gives the bot time to think, research, and improve when not chatting.
+ *
+ * Idle behaviors are loaded from skills in .claude/skills/<name>/SKILL.md
+ * Skills can define an optional "## Idle Behavior" section with optional cooldown.
+ *
+ * Features:
+ * - Tracks last run time for each behavior in agent-data/idle-state.json
+ * - Respects cooldowns defined in skills (e.g., "Cooldown: 1 hour")
+ * - Uses the bot to choose from eligible behaviors based on what feels most useful
  */
 
-import { Client, TextChannel } from "discord.js-selfbot-v13";
-import { BotConfig } from "./bot";
-import { processWithAgent } from "./agent";
+import { Client } from "discord.js-selfbot-v13";
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { BotConfig, dmCreator } from "./bot-types";
+import { isAgentBusy } from "./agent";
+import { log, logFull, error } from "./log";
+import { getEffectiveConfig } from "./config/runtime-config";
+import { type IdleConfig, setDebugMode, isDebugMode, isOnCooldown, recordBehaviorRun } from "./idle-state";
+import { getAllIdleBehaviors, formatCooldown } from "./skill-loader";
+import { executeIdleBehavior } from "./idle-executor";
+import { chooseBehaviorWithHaiku, fallbackBehaviorChoice } from "./idle-selector";
+import type { IdleBehavior } from "./skill-loader";
 
-// ============================================================================
-// Configuration
-// ============================================================================
-
-// Default values (can be overridden via start() options)
-let IDLE_CHECK_INTERVAL_MS = 30 * 60 * 1000; // Check every 30 minutes
-let IDLE_THRESHOLD_MS = 15 * 60 * 1000; // Consider idle after 15 minutes
-
-export interface IdleConfig {
-  checkIntervalMs?: number;
-  thresholdMs?: number;
-}
-
-// ============================================================================
-// Idle Behavior Prompts
-// ============================================================================
-
-const IDLE_BEHAVIORS = [
-  {
-    name: "reflect",
-    prompt: `You're taking some quiet time to reflect. Review your recent memories in agent-data/memories/ and think about:
-- What patterns have you noticed in conversations?
-- What have you learned about the people you talk to?
-- Are there any insights worth adding to agent-data/learned-patterns.md?
-
-If you have meaningful reflections, update learned-patterns.md. Don't force it - only write if you have genuine insights.
-
-Output [IDLE_COMPLETE] when done.`,
-  },
-  {
-    name: "check_patch_notes",
-    prompt: `Time for some gaming research! Search for recent patch notes for ONE of these games (pick randomly):
-- Arc Raiders
-- Heroes of the Storm (HotS)
-- Overwatch 2 (OW2)
-
-Look for recent patches, balance changes, or news. If you find something interesting, save a brief summary to agent-data/memories/ with today's date.
-
-Keep it casual - you're just staying informed about games you care about.
-
-Output [IDLE_COMPLETE] when done.`,
-  },
-  {
-    name: "meme_research",
-    prompt: `Meme time! Search for trending memes or internet humor. Look for:
-- New meme formats
-- Gaming memes
-- Tech humor
-- Anything that made you laugh
-
-If you find something genuinely funny or relevant, save a note about it to agent-data/memories/. Include why it's funny - context matters for humor.
-
-Output [IDLE_COMPLETE] when done.`,
-  },
-  {
-    name: "skill_review",
-    prompt: `Time for some self-improvement. Review your skills in .claude/skills/ and think about:
-- Are there capabilities you use often that could be formalized into skills?
-- Are any existing skills outdated or could be improved?
-- What new skills might be useful based on recent conversations?
-
-If you have ideas for new skills or improvements, you can create or update skill files. Don't force it - only act on genuine insights.
-
-Output [IDLE_COMPLETE] when done.`,
-  },
-];
+// Re-export IdleConfig for index.ts
+export type { IdleConfig } from "./idle-state";
 
 // ============================================================================
 // IdleManager Class
@@ -86,34 +38,50 @@ class IdleManager {
   private client: Client | null = null;
   private config: BotConfig | null = null;
   private isRunningIdleBehavior: boolean = false;
+  private toolsServer: McpSdkServerConfigWithInstance | null = null;
 
   /**
    * Start the idle check loop
    */
-  start(client: Client, config: BotConfig, idleConfig?: IdleConfig): void {
+  async start(client: Client, config: BotConfig, idleConfig?: IdleConfig, toolsServer?: McpSdkServerConfigWithInstance): Promise<void> {
     this.client = client;
     this.config = config;
+    this.toolsServer = toolsServer ?? null;
     this.lastActivityTime = Date.now();
 
-    // Apply custom idle config if provided
-    if (idleConfig?.checkIntervalMs) {
-      IDLE_CHECK_INTERVAL_MS = idleConfig.checkIntervalMs;
-    }
-    if (idleConfig?.thresholdMs) {
-      IDLE_THRESHOLD_MS = idleConfig.thresholdMs;
+    // Apply debug mode if provided (reduces cooldowns to 1/60th)
+    if (idleConfig?.debugMode) {
+      setDebugMode(true);
+      log("IDLE", "Debug mode: cooldowns reduced to 1/60th (hours -> minutes)");
     }
 
-    console.log("[IDLE] Starting idle behavior system");
-    console.log(
-      `[IDLE] Check interval: ${IDLE_CHECK_INTERVAL_MS / 1000 / 60} minutes`
-    );
-    console.log(
-      `[IDLE] Idle threshold: ${IDLE_THRESHOLD_MS / 1000 / 60} minutes`
-    );
+    // Read initial config values
+    const { config: runtimeConfig } = await getEffectiveConfig();
+    let checkIntervalMs = runtimeConfig.idle.checkIntervalMinutes * 60000;
+
+    // Apply debug reduction if enabled
+    if (isDebugMode()) {
+      checkIntervalMs = Math.max(checkIntervalMs / 60, 1000); // At least 1 second
+    }
+
+    log("IDLE", "Starting idle behavior system");
+    log("IDLE", `Check interval: ${checkIntervalMs / 1000 / 60} minutes (from config)`);
+    log("IDLE", `Idle threshold: ${runtimeConfig.idle.thresholdMinutes} minutes (from config)`);
+
+    // Load and log all idle behaviors at startup
+    const allBehaviors = await getAllIdleBehaviors();
+    log("IDLE", `Registered ${allBehaviors.length} idle behaviors:`);
+    for (const behavior of allBehaviors) {
+      const cooldown = behavior.cooldownMs
+        ? formatCooldown(behavior.cooldownMs)
+        : "none";
+      const source = behavior.skillPath ? "skill" : "built-in";
+      log("IDLE", `  - ${behavior.name} (${source}, cooldown: ${cooldown})`);
+    }
 
     this.checkInterval = setInterval(() => {
       this.checkAndTriggerIdleBehavior();
-    }, IDLE_CHECK_INTERVAL_MS);
+    }, checkIntervalMs);
   }
 
   /**
@@ -123,7 +91,7 @@ class IdleManager {
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
       this.checkInterval = null;
-      console.log("[IDLE] Stopped idle behavior system");
+      log("IDLE", "Stopped idle behavior system");
     }
   }
 
@@ -132,60 +100,108 @@ class IdleManager {
    */
   resetTimer(): void {
     this.lastActivityTime = Date.now();
-    console.log("[IDLE] Activity timer reset");
+    log("IDLE", "Activity timer reset");
   }
 
   /**
    * Check if idle and trigger a behavior if appropriate
    */
   private async checkAndTriggerIdleBehavior(): Promise<void> {
+    // Re-read config each cycle to pick up changes
+    const { config: runtimeConfig } = await getEffectiveConfig();
+    let idleThresholdMs = runtimeConfig.idle.thresholdMinutes * 60000;
+
+    // Apply debug reduction if enabled
+    if (isDebugMode()) {
+      idleThresholdMs = Math.max(idleThresholdMs / 60, 1000); // At least 1 second
+    }
+
     const idleTime = Date.now() - this.lastActivityTime;
     const idleMinutes = Math.floor(idleTime / 1000 / 60);
 
-    console.log(`[IDLE] Checking... idle for ${idleMinutes} minutes`);
+    log("IDLE", `Checking... idle for ${idleMinutes} minutes (threshold: ${idleThresholdMs / 1000 / 60} min)`);
 
     // Not idle enough yet
-    if (idleTime < IDLE_THRESHOLD_MS) {
-      console.log("[IDLE] Not idle long enough, skipping");
+    if (idleTime < idleThresholdMs) {
+      log("IDLE", "Not idle long enough, skipping");
+      return;
+    }
+
+    // Main agent is busy processing a turn
+    if (isAgentBusy()) {
+      log("IDLE", "Main agent is busy, skipping idle behavior");
       return;
     }
 
     // Already running an idle behavior
     if (this.isRunningIdleBehavior) {
-      console.log("[IDLE] Already running idle behavior, skipping");
+      log("IDLE", "Already running idle behavior, skipping");
       return;
     }
 
-    // Pick a random behavior
-    const behavior =
-      IDLE_BEHAVIORS[Math.floor(Math.random() * IDLE_BEHAVIORS.length)];
-    console.log(`[IDLE] Triggering idle behavior: ${behavior.name}`);
+    // Load all behaviors (built-in + skills) - reloads each time to pick up new skills
+    const allBehaviors = await getAllIdleBehaviors();
+
+    // Filter out behaviors that are on cooldown
+    const eligibleBehaviors = [];
+    for (const behavior of allBehaviors) {
+      if (!(await isOnCooldown(behavior))) {
+        eligibleBehaviors.push(behavior);
+      }
+    }
+
+    if (eligibleBehaviors.length === 0) {
+      log("IDLE", "All behaviors are on cooldown, skipping");
+      return;
+    }
+
+    log("IDLE", `${eligibleBehaviors.length} eligible behaviors (of ${allBehaviors.length} total)`);
+
+    const behaviors = await chooseBehaviorWithHaiku(eligibleBehaviors, idleMinutes);
+
+    if (behaviors.length === 0) {
+      log("IDLE", "No behaviors selected this cycle");
+      return;
+    }
+
+    log("IDLE", `Selected ${behaviors.length} behavior(s): ${behaviors.map(b => b.name).join(", ")}`);
 
     this.isRunningIdleBehavior = true;
 
     try {
-      // Create a minimal context for idle behaviors
-      const idleContext = `
-## IDLE BEHAVIOR TRIGGERED
-You have been idle for ${idleMinutes} minutes. Time for some self-directed activity.
+      for (const behavior of behaviors) {
+        // Yield to real conversations if main agent became busy
+        if (isAgentBusy()) {
+          log("IDLE", "Main agent became busy, stopping idle batch");
+          break;
+        }
 
-This is NOT a conversation - you're just taking time to think and improve.
-No need to respond to anyone.
-`;
+        const source = behavior.skillPath ? `skill:${behavior.name}` : `builtin:${behavior.name}`;
+        log("IDLE", `Running: ${source}`);
 
-      const response = await processWithAgent(idleContext, {
-        mustRespond: false,
-        channelId: "idle",
-        isGroupDm: false,
-      });
+        try {
+          const response = await executeIdleBehavior(behavior, idleMinutes, this.toolsServer);
+          await recordBehaviorRun(behavior.name);
 
-      if (response && !response.includes("[IDLE_COMPLETE]")) {
-        console.log(`[IDLE] Behavior completed with output: ${response.substring(0, 100)}...`);
-      } else {
-        console.log("[IDLE] Behavior completed successfully");
+          if (response) {
+            logFull("IDLE", `${behavior.name} completed: `, response);
+          } else {
+            log("IDLE", `${behavior.name} completed (no output)`);
+          }
+
+          if (this.client && this.config) {
+            const auditMsg = response
+              ? `[IDLE] **${behavior.name}** completed:\n${response.substring(0, 1800)}`
+              : `[IDLE] **${behavior.name}** completed (no output)`;
+            await dmCreator(this.client, this.config.creatorId, auditMsg).catch(err => {
+              error("IDLE", "Failed to send idle audit DM", err);
+            });
+          }
+        } catch (err) {
+          error("IDLE", `Error during idle behavior '${behavior.name}'`, err);
+          // Continue with remaining behaviors
+        }
       }
-    } catch (error) {
-      console.error("[IDLE] Error during idle behavior:", error);
     } finally {
       this.isRunningIdleBehavior = false;
     }
@@ -201,8 +217,8 @@ const idleManager = new IdleManager();
 /**
  * Start the idle behavior loop
  */
-export function startIdleLoop(client: Client, config: BotConfig, idleConfig?: IdleConfig): void {
-  idleManager.start(client, config, idleConfig);
+export async function startIdleLoop(client: Client, config: BotConfig, idleConfig?: IdleConfig, toolsServer?: McpSdkServerConfigWithInstance): Promise<void> {
+  await idleManager.start(client, config, idleConfig, toolsServer);
 }
 
 /**

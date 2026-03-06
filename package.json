@@ -4,17 +4,27 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && knip && madge --circular --extensions ts src/",
+    "reset": "rm -f agent-data/session.json && echo '✅ Session reset (kept memories/patterns)'",
+    "reset:full": "rm -f agent-data/session.json && rm -rf agent-data/memories/* agent-data/relationships/* agent-data/transcripts/* && git checkout agent-data/learned-patterns.md && echo '✅ Full reset (back to seed state)'",
+    "reset:nuclear": "rm -rf agent-data && git checkout agent-data && echo '✅ Nuclear reset (everything wiped)'"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "debug": "^4.4.3",
-    "discord.js-selfbot-v13": "latest"
+    "discord.js-selfbot-v13": "latest",
+    "sharp": "^0.34.5",
+    "zod": "^4.3.6"
+  },
+  "overrides": {
+    "@img/sharp-darwin-arm64": "0.34.5",
+    "@img/sharp-libvips-darwin-arm64": "1.2.4"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/debug": "^4.1.12",
     "knip": "^5.82.1",
-    "typescript": "latest"
+    "madge": "^8",
+    "typescript": "^5"
   }
 }

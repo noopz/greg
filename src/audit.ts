@@ -1,44 +1,89 @@
 /**
- * Audit Trail - Skill Creation Detection & Creator DMs
+ * Audit Trail - Self-Modification Detection & Creator DMs
  *
- * Watches .claude/skills/ and agent-data/ for changes,
- * notifying the creator when Greg creates new skills or
- * makes significant updates to its knowledge base.
+ * Watches for Greg's self-modifications and notifies the creator:
+ * - .claude/skills/ - new skills or skill updates
+ * - .claude/agents/ - new subagents or agent updates
+ * - agent-data/relationships/ - relationship file changes
+ * - agent-data/impressions/ - new impressions logged
+ * - agent-data/learned-patterns.md - significant pattern updates
  */
 
 import { Client } from "discord.js-selfbot-v13";
 import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { dmCreator } from "./bot";
+import { SKILLS_DIR, AGENTS_DIR, AGENT_DATA_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR } from "./paths";
+import { dmCreator } from "./bot-types";
+import { createFileWatcher, closeAllWatchers, type ChangeParams } from "./file-watcher";
+import type { UserId } from "./agent-types";
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-const PROJECT_DIR = process.cwd();
-const SKILLS_DIR = path.join(PROJECT_DIR, ".claude", "skills");
-const AGENT_DATA_DIR = path.join(PROJECT_DIR, "agent-data");
-const RELATIONSHIPS_DIR = path.join(AGENT_DATA_DIR, "relationships");
 const LEARNED_PATTERNS_FILE = path.join(AGENT_DATA_DIR, "learned-patterns.md");
 
 // Minimum file size change (in bytes) to consider "significant"
 const SIGNIFICANT_CHANGE_THRESHOLD = 100;
 
 // ============================================================================
-// State
+// Diff Helpers
 // ============================================================================
 
-let skillsWatcher: FSWatcher | null = null;
-let agentDataWatcher: FSWatcher | null = null;
-let relationshipsWatcher: FSWatcher | null = null;
+/**
+ * Get lines added between old and new content
+ */
+function getAddedLines(oldContent: string, newContent: string): string[] {
+  const oldLines = new Set(oldContent.split('\n').map(l => l.trim()).filter(l => l));
+  const newLines = newContent.split('\n').map(l => l.trim()).filter(l => l);
+  return newLines.filter(line => !oldLines.has(line));
+}
 
-// Track file sizes for detecting significant changes
-const fileSizes: Map<string, number> = new Map();
+/**
+ * Discord message character limit
+ */
+const DISCORD_CHAR_LIMIT = 2000;
 
-// Track recently processed files to avoid duplicate notifications
-const recentlyProcessed: Set<string> = new Set();
-const DEBOUNCE_MS = 2000;
+/**
+ * Format all changes for audit messages.
+ * Truncates if necessary to fit Discord's 2000 char limit.
+ */
+function summarizeChanges(addedLines: string[]): string {
+  if (addedLines.length === 0) return "minor formatting changes";
+
+  // Filter out markdown headers and empty-ish lines
+  const meaningful = addedLines.filter(l =>
+    !l.startsWith('#') &&
+    !l.startsWith('<!--') &&
+    !l.startsWith('```') &&
+    l.length > 10
+  );
+
+  if (meaningful.length === 0) return "structural changes";
+
+  // Build the summary, but respect a reasonable limit
+  // Leave room for the audit message prefix (~100 chars)
+  const MAX_SUMMARY_LENGTH = DISCORD_CHAR_LIMIT - 150;
+
+  const lines: string[] = [];
+  let totalLength = 0;
+
+  for (const line of meaningful) {
+    const formatted = `- ${line}`;
+    if (totalLength + formatted.length + 1 > MAX_SUMMARY_LENGTH) {
+      const remaining = meaningful.length - lines.length;
+      if (remaining > 0) {
+        lines.push(`... and ${remaining} more line(s)`);
+      }
+      break;
+    }
+    lines.push(formatted);
+    totalLength += formatted.length + 1; // +1 for newline
+  }
+
+  return lines.join('\n');
+}
 
 // ============================================================================
 // Helpers
@@ -89,198 +134,131 @@ function extractDescription(content: string): string {
   return "No description available.";
 }
 
-/**
- * Format a skill notification message
- */
-function formatSkillNotification(
-  skillName: string,
-  description: string,
-  createdAt: Date
-): string {
-  const timestamp = createdAt.toLocaleString();
-
-  return `**[Audit] New Skill Created**
-
-**Skill Name:** ${skillName}
-**Description:** ${description}
-**Created:** ${timestamp}
-
-_Greg created this skill to improve itself._`;
-}
-
-/**
- * Format a relationship file notification
- */
-function formatRelationshipNotification(
-  userId: string,
-  preview: string,
-  createdAt: Date
-): string {
-  const timestamp = createdAt.toLocaleString();
-
-  return `**[Audit] New Relationship File**
-
-**User ID:** ${userId}
-**Preview:** ${preview}
-**Created:** ${timestamp}
-
-_Greg is learning about this user._`;
-}
-
-/**
- * Format a learned patterns update notification
- */
-function formatPatternsNotification(
-  sizeDiff: number,
-  updatedAt: Date
-): string {
-  const timestamp = updatedAt.toLocaleString();
-  const changeType = sizeDiff > 0 ? "added" : "removed";
-  const absSize = Math.abs(sizeDiff);
-
-  return `**[Audit] Learned Patterns Updated**
-
-**Change:** ${absSize} bytes ${changeType}
-**Updated:** ${timestamp}
-
-_Greg is refining its behavioral patterns._`;
-}
-
 // ============================================================================
-// Watchers
+// Change Handlers
 // ============================================================================
 
 /**
- * Watch the skills directory for new SKILL.md files
+ * Handle skill file changes
  */
-async function watchSkillsDirectory(
-  client: Client,
-  creatorId: string
-): Promise<void> {
-  // Ensure directory exists
-  await fs.mkdir(SKILLS_DIR, { recursive: true });
+async function handleSkillChange({ filename, content, oldContent, isNew }: ChangeParams): Promise<string | null> {
+  const frontmatter = parseYamlFrontmatter(content);
+  const skillName = frontmatter.name || path.basename(path.dirname(filename)) || filename.replace("/SKILL.md", "");
 
-  console.log(`[AUDIT] Watching skills directory: ${SKILLS_DIR}`);
+  if (isNew) {
+    const description = frontmatter.description || extractDescription(content);
+    const desc = description.length > 100 ? description.substring(0, 97) + "..." : description;
+    console.log(`[AUDIT] New skill: ${skillName}`);
+    return `[Audit] New skill: **${skillName}** - ${desc}`;
+  }
 
-  skillsWatcher = watch(SKILLS_DIR, { recursive: true }, async (event, filename) => {
-    if (!filename || !filename.endsWith("SKILL.md")) {
-      return;
-    }
-
-    const fullPath = path.join(SKILLS_DIR, filename);
-    const cacheKey = `skill:${fullPath}`;
-
-    // Debounce
-    if (recentlyProcessed.has(cacheKey)) {
-      return;
-    }
-    recentlyProcessed.add(cacheKey);
-    setTimeout(() => recentlyProcessed.delete(cacheKey), DEBOUNCE_MS);
-
-    try {
-      // Check if file exists (might be a delete event)
-      const stat = await fs.stat(fullPath).catch(() => null);
-      if (!stat) {
-        return;
-      }
-
-      console.log(`[AUDIT] New skill detected: ${filename}`);
-
-      // Read and parse the skill file
-      const content = await fs.readFile(fullPath, "utf-8");
-      const frontmatter = parseYamlFrontmatter(content);
-
-      // Get skill name from frontmatter or filename
-      const skillName = frontmatter.name || path.dirname(filename) || filename.replace("/SKILL.md", "");
-      const description = frontmatter.description || extractDescription(content);
-
-      // Send DM to creator
-      const message = formatSkillNotification(skillName, description, stat.birthtime);
-      await dmCreator(client, creatorId, message);
-
-      console.log(`[AUDIT] Sent skill notification for: ${skillName}`);
-    } catch (error) {
-      console.error(`[AUDIT] Error processing skill file ${filename}:`, error);
-    }
-  });
+  const addedLines = getAddedLines(oldContent, content);
+  if (addedLines.length === 0) return null;
+  const summary = summarizeChanges(addedLines);
+  console.log(`[AUDIT] Skill updated: ${skillName}`);
+  return `[Audit] Skill **${skillName}** updated: ${summary}`;
 }
 
 /**
- * Watch the relationships directory for new files
+ * Handle agent file changes
  */
-async function watchRelationshipsDirectory(
-  client: Client,
-  creatorId: string
-): Promise<void> {
-  // Ensure directory exists
-  await fs.mkdir(RELATIONSHIPS_DIR, { recursive: true });
+async function handleAgentChange({ filename, content, oldContent, isNew }: ChangeParams): Promise<string | null> {
+  const agentName = filename.replace(".md", "");
 
-  console.log(`[AUDIT] Watching relationships directory: ${RELATIONSHIPS_DIR}`);
+  if (isNew) {
+    const description = extractDescription(content);
+    const desc = description.length > 100 ? description.substring(0, 97) + "..." : description;
+    console.log(`[AUDIT] New agent: ${agentName}`);
+    return `[Audit] New agent: **${agentName}** - ${desc}`;
+  }
 
-  relationshipsWatcher = watch(RELATIONSHIPS_DIR, async (event, filename) => {
-    if (!filename || !filename.endsWith(".md")) {
-      return;
-    }
-
-    const fullPath = path.join(RELATIONSHIPS_DIR, filename);
-    const cacheKey = `relationship:${fullPath}`;
-
-    // Debounce
-    if (recentlyProcessed.has(cacheKey)) {
-      return;
-    }
-    recentlyProcessed.add(cacheKey);
-    setTimeout(() => recentlyProcessed.delete(cacheKey), DEBOUNCE_MS);
-
-    try {
-      // Check if file exists
-      const stat = await fs.stat(fullPath).catch(() => null);
-      if (!stat) {
-        return;
-      }
-
-      // Only notify for new files (created in last 5 seconds)
-      const isNew = Date.now() - stat.birthtimeMs < 5000;
-      if (!isNew) {
-        return;
-      }
-
-      console.log(`[AUDIT] New relationship file detected: ${filename}`);
-
-      // Read preview
-      const content = await fs.readFile(fullPath, "utf-8");
-      const preview = content.substring(0, 100) + (content.length > 100 ? "..." : "");
-      const userId = filename.replace(".md", "");
-
-      // Send DM to creator
-      const message = formatRelationshipNotification(userId, preview, stat.birthtime);
-      await dmCreator(client, creatorId, message);
-
-      console.log(`[AUDIT] Sent relationship notification for: ${userId}`);
-    } catch (error) {
-      console.error(`[AUDIT] Error processing relationship file ${filename}:`, error);
-    }
-  });
+  const addedLines = getAddedLines(oldContent, content);
+  if (addedLines.length === 0) return null;
+  const summary = summarizeChanges(addedLines);
+  console.log(`[AUDIT] Agent updated: ${agentName}`);
+  return `[Audit] Agent **${agentName}** updated: ${summary}`;
 }
+
+/**
+ * Handle relationship file changes
+ */
+async function handleRelationshipChange({ filename, content, oldContent, isNew }: ChangeParams): Promise<string | null> {
+  const userId = filename.replace(".md", "");
+
+  if (isNew) {
+    const summary = summarizeChanges(content.split('\n'));
+    console.log(`[AUDIT] Relationship created: ${userId}`);
+    return `[Audit] Learning about <@${userId}>: ${summary}`;
+  }
+
+  const addedLines = getAddedLines(oldContent, content);
+  if (addedLines.length === 0) return null;
+  const summary = summarizeChanges(addedLines);
+  console.log(`[AUDIT] Relationship updated: ${userId}`);
+  return `[Audit] Updated <@${userId}>: ${summary}`;
+}
+
+/**
+ * Handle impression file changes (JSONL append-only)
+ */
+async function handleImpressionChange({ filename, content, oldContent }: ChangeParams): Promise<string | null> {
+  const userId = filename.replace(".jsonl", "");
+
+  // Find new lines (impressions are append-only JSONL)
+  const oldLines = oldContent.trim().split('\n').filter(l => l);
+  const newLines = content.trim().split('\n').filter(l => l);
+
+  if (newLines.length <= oldLines.length) {
+    return null; // No new impressions
+  }
+
+  // Get only the new impressions - collect all messages
+  const addedLines = newLines.slice(oldLines.length);
+  const messages: string[] = [];
+
+  for (const line of addedLines) {
+    try {
+      const impression = JSON.parse(line);
+      const what = impression.what || "unknown";
+      const truncated = what.length > 150 ? what.substring(0, 147) + "..." : what;
+      console.log(`[AUDIT] New impression for ${userId}: ${what.substring(0, 50)}...`);
+      messages.push(`[Audit] Impression of <@${userId}>: ${truncated}`);
+    } catch {
+      // Invalid JSON line, skip
+    }
+  }
+
+  // Return first message (the watcher sends one DM per call; for multiple impressions
+  // we'd need a different approach, but typically only one is appended at a time)
+  return messages[0] || null;
+}
+
+// ============================================================================
+// Learned Patterns Watcher (special: single-file with size threshold)
+// ============================================================================
+
+let patternsWatcher: FSWatcher | null = null;
+const patternsContent: Map<string, string> = new Map();
+const patternsRecentlyProcessed: Set<string> = new Set();
 
 /**
  * Watch agent-data for significant changes to learned-patterns.md
  */
 async function watchLearnedPatterns(
   client: Client,
-  creatorId: string
+  creatorId: UserId
 ): Promise<void> {
-  // Get initial file size
+  // Get initial file content
   try {
-    const stat = await fs.stat(LEARNED_PATTERNS_FILE);
-    fileSizes.set(LEARNED_PATTERNS_FILE, stat.size);
+    const content = await fs.readFile(LEARNED_PATTERNS_FILE, "utf-8");
+    patternsContent.set(LEARNED_PATTERNS_FILE, content);
   } catch {
-    fileSizes.set(LEARNED_PATTERNS_FILE, 0);
+    patternsContent.set(LEARNED_PATTERNS_FILE, "");
   }
 
   console.log(`[AUDIT] Watching learned patterns: ${LEARNED_PATTERNS_FILE}`);
 
-  agentDataWatcher = watch(AGENT_DATA_DIR, async (event, filename) => {
+  patternsWatcher = watch(AGENT_DATA_DIR, async (_event, filename) => {
     if (filename !== "learned-patterns.md") {
       return;
     }
@@ -288,39 +266,43 @@ async function watchLearnedPatterns(
     const cacheKey = `patterns:${LEARNED_PATTERNS_FILE}`;
 
     // Debounce
-    if (recentlyProcessed.has(cacheKey)) {
+    if (patternsRecentlyProcessed.has(cacheKey)) {
       return;
     }
-    recentlyProcessed.add(cacheKey);
-    setTimeout(() => recentlyProcessed.delete(cacheKey), DEBOUNCE_MS);
+    patternsRecentlyProcessed.add(cacheKey);
+    setTimeout(() => patternsRecentlyProcessed.delete(cacheKey), 2000);
 
     try {
-      const stat = await fs.stat(LEARNED_PATTERNS_FILE).catch(() => null);
-      if (!stat) {
+      const content = await fs.readFile(LEARNED_PATTERNS_FILE, "utf-8").catch(() => null);
+      if (!content) {
         return;
       }
 
-      const previousSize = fileSizes.get(LEARNED_PATTERNS_FILE) || 0;
-      const sizeDiff = stat.size - previousSize;
+      const oldContent = patternsContent.get(LEARNED_PATTERNS_FILE) || "";
 
       // Only notify for significant changes
-      if (Math.abs(sizeDiff) < SIGNIFICANT_CHANGE_THRESHOLD) {
-        fileSizes.set(LEARNED_PATTERNS_FILE, stat.size);
+      if (Math.abs(content.length - oldContent.length) < SIGNIFICANT_CHANGE_THRESHOLD) {
+        patternsContent.set(LEARNED_PATTERNS_FILE, content);
         return;
       }
 
-      console.log(`[AUDIT] Significant patterns change: ${sizeDiff} bytes`);
+      // Get what changed
+      const addedLines = getAddedLines(oldContent, content);
+      if (addedLines.length === 0) {
+        patternsContent.set(LEARNED_PATTERNS_FILE, content);
+        return;
+      }
 
-      // Update tracked size
-      fileSizes.set(LEARNED_PATTERNS_FILE, stat.size);
+      // Update cached content
+      patternsContent.set(LEARNED_PATTERNS_FILE, content);
 
-      // Send DM to creator
-      const message = formatPatternsNotification(sizeDiff, stat.mtime);
+      const summary = summarizeChanges(addedLines);
+      const message = `[Audit] Patterns updated: ${summary}`;
+
+      console.log(`[AUDIT] Patterns updated:\n${summary}`);
       await dmCreator(client, creatorId, message);
-
-      console.log(`[AUDIT] Sent patterns notification`);
-    } catch (error) {
-      console.error(`[AUDIT] Error processing patterns update:`, error);
+    } catch (err) {
+      console.error(`[AUDIT] Error processing patterns update:`, err);
     }
   });
 }
@@ -334,13 +316,38 @@ async function watchLearnedPatterns(
  */
 export async function startAuditWatcher(
   client: Client,
-  creatorId: string
+  creatorId: UserId
 ): Promise<void> {
   console.log(`[AUDIT] Starting audit watcher system...`);
 
   await Promise.all([
-    watchSkillsDirectory(client, creatorId),
-    watchRelationshipsDirectory(client, creatorId),
+    createFileWatcher(client, creatorId, {
+      directory: SKILLS_DIR,
+      fileFilter: (filename) => filename.endsWith("SKILL.md"),
+      entityName: "skill",
+      isDirectoryBased: true,
+      targetFilename: "SKILL.md",
+      recursive: true,
+      handleChange: handleSkillChange,
+    }),
+    createFileWatcher(client, creatorId, {
+      directory: AGENTS_DIR,
+      fileFilter: (filename) => filename.endsWith(".md") && filename !== "TEMPLATE.md",
+      entityName: "agent",
+      handleChange: handleAgentChange,
+    }),
+    createFileWatcher(client, creatorId, {
+      directory: RELATIONSHIPS_DIR,
+      fileFilter: (filename) => filename.endsWith(".md"),
+      entityName: "relationship",
+      handleChange: handleRelationshipChange,
+    }),
+    createFileWatcher(client, creatorId, {
+      directory: IMPRESSIONS_DIR,
+      fileFilter: (filename) => filename.endsWith(".jsonl") && filename !== "README.md",
+      entityName: "impression",
+      handleChange: handleImpressionChange,
+    }),
     watchLearnedPatterns(client, creatorId),
   ]);
 
@@ -353,23 +360,16 @@ export async function startAuditWatcher(
 export function stopAuditWatcher(): void {
   console.log(`[AUDIT] Stopping audit watcher system...`);
 
-  if (skillsWatcher) {
-    skillsWatcher.close();
-    skillsWatcher = null;
-  }
+  // Close factory-managed watchers
+  closeAllWatchers();
 
-  if (relationshipsWatcher) {
-    relationshipsWatcher.close();
-    relationshipsWatcher = null;
+  // Close the patterns watcher (managed separately due to its unique logic)
+  if (patternsWatcher) {
+    patternsWatcher.close();
+    patternsWatcher = null;
   }
-
-  if (agentDataWatcher) {
-    agentDataWatcher.close();
-    agentDataWatcher = null;
-  }
-
-  recentlyProcessed.clear();
-  fileSizes.clear();
+  patternsContent.clear();
+  patternsRecentlyProcessed.clear();
 
   console.log(`[AUDIT] Audit watcher system stopped`);
 }

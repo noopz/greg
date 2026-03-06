@@ -11,11 +11,14 @@ dist/
 # Runtime agent data (contains personal info, session state, conversations)
 agent-data/memories/
 agent-data/relationships/
+agent-data/impressions/*.jsonl
 agent-data/session.json
 agent-data/transcripts/
 agent-data/compaction-summaries/
 agent-data/meme-archive/
 agent-data/game-updates/
+agent-data/idle-state.json
+agent-data/greg-config.json
 
 # Keep the template files but not the content
 !agent-data/learned-patterns.md
@@ -24,9 +27,17 @@ agent-data/game-updates/
 # Logs
 *.log
 logs/
+runlog.txt
 
 # Task tracking (local development state)
 qask/
+
+# Plugin script deps (now under local/)
+local/plugins/*/scripts/node_modules/
+
+# Steam data (personal Discord→Steam mappings and cached game libraries)
+agent-data/steam-user-map.json
+agent-data/steam-library-cache.json
 
 # OS files
 .DS_Store
@@ -38,3 +49,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+agent-data/greg-config-effective.json
+
+# Cross-file index (local dev artifact)
+.strata/

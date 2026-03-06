@@ -1,62 +1,39 @@
-# Greg - Discord Self-Learning Agent
+# Project Rules
+
+## Runtime
+
+Bun, not Node.js. Use `bun run` for all commands.
+
+## Verification
+
+```bash
+bun run lint        # tsc + knip + madge (types, dead code, circular deps)
+```
 
 ## Banned Libraries
 
-**DO NOT USE:**
-- `@anthropic-ai/sdk` - This project uses `@anthropic-ai/claude-agent-sdk` which leverages the claude CLI for auth. No API key is needed. Never install or import the direct Anthropic SDK.
+- `@anthropic-ai/sdk` — use `@anthropic-ai/claude-agent-sdk` (claude CLI auth, no API key)
 
 ## Banned Commands
 
-**NEVER RUN THESE BASH COMMANDS:**
-- `rm -rf /` or `rm -rf ~/` or `rm -rf *` - Destructive deletion
-- `dd` to `/dev/` devices - Disk destruction
-- `mkfs` - Filesystem formatting
-- `:(){ :|:& };:` - Fork bombs
-- `curl ... | bash` or `wget ... | sh` - Remote code execution
-- `chmod 777` or `chmod +s` - Dangerous permissions
-- `chown root` - Privilege escalation
-- Redirects to `/dev/sd*` - Disk overwrites
+- `rm -rf /`, `rm -rf ~/`, `rm -rf *` — destructive deletion
+- `dd` to `/dev/`, `mkfs`, redirects to `/dev/sd*` — disk destruction
+- `curl ... | bash`, `wget ... | sh` — remote code execution
+- `chmod 777`, `chmod +s`, `chown root` — dangerous permissions
 - Any command that deletes files outside of `agent-data/`
-- Any command that modifies system files
 
-## Architecture
+## Dependencies — DO NOT REMOVE
 
-Greg is a self-learning Discord selfbot using:
-- `@anthropic-ai/claude-agent-sdk` - Agent SDK (uses claude CLI auth, no API key)
-- `discord.js-selfbot-v13` - Discord selfbot library
-- Bun runtime
+**`debug`** — required transitive dep. `discord.js-selfbot-v13` → `werift-rtp` uses `require("debug")` without declaring it. Keep installed or Bun fails to resolve.
 
-### Key Patterns
+## Code Conventions
 
-1. **Hot-reload context**: Identity, memories, patterns loaded fresh from disk every turn via `systemPrompt.append`
-2. **Per-session turn queues**: Prevents concurrent agent calls per channel
-3. **Atomic file writes**: tmp file + rename pattern for crash safety
-4. **Append-only transcripts**: JSONL format, never modify historical entries
-5. **Context compaction**: Summarizes old messages when approaching token limits
+**Atomic writes:** Always use `atomicWriteFile()` from `src/persistence.ts` for state files. Never raw `fs.writeFile()` — crashes corrupt data.
 
-### File Structure
+**Branded types:** IDs use compile-time branded types (`UserId`, `ChannelId`, `SessionId`). Wrap raw strings at system boundaries with `userId()`, `channelId()`, `sessionId()` from `src/agent-types.ts`.
 
-```
-agent-data/
-  persona.md              # Greg's identity
-  learned-patterns.md     # Accumulated knowledge
-  memories/               # Daily memory logs
-  relationships/          # Per-user notes
-  compaction-summaries/   # Conversation summaries after compaction
-  session.json            # Current session state
-  transcripts/            # Our own JSONL transcripts
-```
+**JSONL files** (transcripts, impressions): append-only. Never modify existing lines.
 
-### Token Management
+## Development
 
-- **Soft threshold (116k)**: Triggers memory flush - agent saves important memories
-- **Hard threshold (120k)**: Triggers compaction - summarizes old messages, resets session
-
-## Running
-
-```bash
-bun run dev    # Development with watch
-bun run start  # Production
-```
-
-Requires `DISCORD_TOKEN` and `CREATOR_ID` environment variables.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for architecture, file structure, running, and linting docs.
