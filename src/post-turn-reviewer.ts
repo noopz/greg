@@ -180,7 +180,8 @@ Additional structural rules:
   if (isGroupDm) {
     prompt += `
 8. **Tunnel Vision (group channels only):** A speaker OTHER than the primary conversation partner asked a question or made a direct comment in the user message context, and the bot's response doesn't acknowledge them at all. Do NOT flag just because multiple people are present — flag specifically when someone's question or comment went unaddressed. Flag send_to_channel with task to acknowledge the missed participant and what they said.
-9. **Context Amnesia:** The bot's response is a naive question ("what's X?", "what do you mean by Y?", "who is Z?") about a term, name, or reference that the user dropped casually without explanation — implying it's shared context the bot should already know. If someone says something without explaining it, they expect the bot to know. The bot should search_transcripts before asking. Flag search_transcripts with task describing what to search for.`;
+9. **Context Amnesia:** The bot's response is a naive question ("what's X?", "what do you mean by Y?", "who is Z?") about a term, name, or reference that the user dropped casually without explanation — implying it's shared context the bot should already know. If someone says something without explaining it, they expect the bot to know. The bot should search_transcripts before asking. Flag search_transcripts with task describing what to search for.
+10. **Premature Response:** The bot's response contains language promising continued action ("let me keep digging", "I'll look for more", "still searching", "let me check more") but no schedule_followup was used. The bot has no future turns — promises of continued research are lies unless backed by schedule_followup. Flag schedule_followup with task describing what was promised but not delivered.`;
   }
 
   if (failureModes) {

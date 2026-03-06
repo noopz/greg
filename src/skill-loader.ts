@@ -7,11 +7,10 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SKILLS_DIR, PROJECT_DIR } from "./paths";
+import { SKILLS_DIR, LOCAL_SKILLS_DIR } from "./paths";
 import { log } from "./log";
 import { isSkillDisabled } from "./config/runtime-config";
 
-const LOCAL_SKILLS_DIR = path.join(PROJECT_DIR, "local", "skills");
 const SKILL_DIRS = [SKILLS_DIR, LOCAL_SKILLS_DIR];
 
 // ============================================================================

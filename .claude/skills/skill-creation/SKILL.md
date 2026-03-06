@@ -5,7 +5,12 @@ description: Reference guide for creating and editing skills. Read this BEFORE c
 
 # Skill Creation Guide
 
-Skills live in `.claude/skills/<skill-name>/SKILL.md`. Every skill serves dual purpose:
+Skills are stored in two locations:
+
+- **`local/skills/<skill-name>/SKILL.md`** — Personal skills. **Always create new skills here.** This directory is for your custom behaviors and won't be synced to the public repo.
+- **`.claude/skills/<skill-name>/SKILL.md`** — Framework skills. **NEVER create or modify skills here.** These are core framework behaviors maintained by the developer.
+
+Every skill serves dual purpose:
 
 - **Manual**: Invoked via the Skill tool during conversation
 - **Idle**: Runs automatically when chat goes quiet (requires `## Idle Behavior` section)
@@ -42,6 +47,10 @@ Cooldown: 120 minutes
 ```
 
 ## Critical Requirements
+
+### Skill Location
+
+**All new skills go in `local/skills/`.** The `.claude/skills/` directory is reserved for framework skills and must not be modified. The idle system scans both directories automatically.
 
 ### Idle Registration
 
@@ -80,11 +89,11 @@ During idle runs, your text output goes nowhere - it's not a conversation. To po
 
 ## Examples
 
-Look at existing skills in `.claude/skills/` for reference:
+Look at existing skills for reference:
 
-- `impression-consolidation` - Idle skill, file operations only
-- `pot-stirrer` - Idle skill, sends messages to Discord via send_to_channel
-- `conversation-logging` - Both manual and idle, writes to memory files
+- `.claude/skills/impression-consolidation` - Framework idle skill, file operations only
+- `.claude/skills/conversation-logging` - Framework skill, both manual and idle
+- `local/skills/pot-stirrer` - Personal idle skill, sends messages to Discord via send_to_channel
 
 ## Idle Behavior
 
@@ -94,7 +103,9 @@ Check if skills need improvement or if a new skill is warranted. Be efficient an
 
 ### Step 1: Gather context (4-5 reads/searches max)
 
-Skills live in `.claude/skills/<skill-name>/SKILL.md`. List that directory to see what exists.
+Skills live in two directories — list both to see what exists:
+- `local/skills/` — your personal skills (create and modify these)
+- `.claude/skills/` — framework skills (read-only, do NOT modify)
 
 Read `agent-data/learned-patterns.md` (self-corrections section especially) and the most recent memory file. Look for:
 - Repeated failures or complaints about a specific skill
@@ -107,12 +118,9 @@ Read `agent-data/learned-patterns.md` (self-corrections section especially) and 
 
 ### Step 2: Decide (pick ONE or do nothing)
 
-**Improve an existing skill** — Only if there's evidence it's failing repeatedly. Read the skill file (`.claude/skills/<skill-name>/SKILL.md`), then pull the RIGHT context for that skill type:
-- Pot-stirrer improvements → check recent impressions/relationships AND call `get_channel_history` to see what recent chat looks like
-- Game-info skills → check what games are being discussed, what info people keep asking for
-- Conversation skills → check memory files for what topics generate engagement
+**Improve an existing skill** — Only if there's evidence it's failing repeatedly. Read the skill file, then pull the RIGHT context for that skill type. **Only modify skills in `local/skills/`.** If a framework skill in `.claude/skills/` needs improvement, note it in a memory file for the developer.
 
-**Create a new skill** — Only if a pattern appeared 3+ times in recent memories AND it's a genuinely repeated action, not a one-off. Not everything needs to be a skill. A skill is justified when:
+**Create a new skill** — Only if a pattern appeared 3+ times in recent memories AND it's a genuinely repeated action, not a one-off. **Always create in `local/skills/`.** A skill is justified when:
 - You keep doing the same multi-step task manually (e.g., "every time someone asks about a game, I search for patch notes, player counts, and news")
 - The group's behavior shifted in a way that warrants automation (e.g., "they started playing a new game and keep asking for updates")
 - There's a clear trigger and a clear action
@@ -126,5 +134,6 @@ A skill is NOT justified when:
 
 ### What NOT to do
 - Do NOT read all skill files to "review" them
+- Do NOT create or modify skills in `.claude/skills/` — that's the framework directory
 - Do NOT create skills for things that are better captured as learned patterns
 - Do NOT improve a skill based on vibes — only based on specific evidence of failure

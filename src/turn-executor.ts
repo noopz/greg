@@ -317,7 +317,7 @@ export async function executeTurn(
         isGroupDm: options.isGroupDm ?? false,
       });
 
-      const MAX_REACT_ITERATIONS = 1;
+      const MAX_REACT_ITERATIONS = 2;
       let reactIteration = 0;
       let currentMissed = missed;
       let sentReplacement = false;
