@@ -170,9 +170,11 @@ function extractUserContent(raw: string): { author: string; content: string; cha
 
   const section = raw.slice(currentMsgIdx);
 
-  // Extract author (just the username, not the ID)
-  const authorMatch = section.match(/Author:\s*([^\n(]+)/);
-  const author = authorMatch?.[1]?.trim() ?? "unknown";
+  // Extract author — handles both "username@id" (new) and "username (id)" (old) formats
+  const authorMatch = section.match(/Author:\s*(\S+?)@(\d+)/) ?? section.match(/Author:\s*([^\n(]+?)(?:\s*\((\d+)\))?[\s\n]/);
+  const authorName = authorMatch?.[1]?.trim() ?? "unknown";
+  const authorId = authorMatch?.[2] ?? "";
+  const author = authorId ? `${authorName}@${authorId}` : authorName;
 
   // Extract content — everything after "Content: " up to the next field or section
   const contentMatch = section.match(/Content:\s*([\s\S]*?)(?:\nMessage ID:|\n===|$)/);

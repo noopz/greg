@@ -49,11 +49,16 @@ export async function formatDiscordContext(
     (a, b) => a.createdTimestamp - b.createdTimestamp
   );
 
+  // Format author labels as "username@id" for non-bot users so Greg can
+  // map usernames to Discord IDs (needed for relationship file naming, etc.)
+  const authorLabel = (authorId: string, username: string) =>
+    authorId === botId ? BOT_NAME : `${username}@${authorId}`;
+
   // Build a map of message IDs to content for resolving reply references
   const messageMap = new Map<string, { author: string; content: string }>();
   for (const msg of sortedMessages) {
     messageMap.set(msg.id, {
-      author: msg.author.id === botId ? BOT_NAME : msg.author.username,
+      author: authorLabel(msg.author.id, msg.author.username),
       content: msg.content.substring(0, 100) + (msg.content.length > 100 ? "..." : ""),
     });
   }
@@ -77,14 +82,13 @@ export async function formatDiscordContext(
     // so the model knows something was posted (important for conversational context).
     if (!msg.content.trim()) {
       if (msg.attachments.size > 0 || msg.embeds.length > 0) {
-        const authorName = msg.author.id === botId ? BOT_NAME : msg.author.username;
-        formattedMessages.push(`[${authorName}]: [posted an image]`);
+        formattedMessages.push(`[${authorLabel(msg.author.id, msg.author.username)}]: [posted an image]`);
       }
       continue;
     }
 
     const isBot = msg.author.id === botId;
-    const authorName = isBot ? BOT_NAME : msg.author.username;
+    const authorName = authorLabel(msg.author.id, msg.author.username);
 
     // Build content — note attachments if present alongside text
     const attachmentNote = msg.attachments.size > 0 ? " [+image]" : "";
@@ -104,7 +108,7 @@ export async function formatDiscordContext(
       } else {
         try {
           const referencedMsg = await channel.messages.fetch(msg.reference.messageId);
-          const refAuthor = referencedMsg.author.id === botId ? BOT_NAME : referencedMsg.author.username;
+          const refAuthor = authorLabel(referencedMsg.author.id, referencedMsg.author.username);
           const refContent = referencedMsg.content.substring(0, 100) + (referencedMsg.content.length > 100 ? "..." : "");
           const refDisplay = refAuthor === BOT_NAME
             ? refContent
@@ -156,7 +160,7 @@ Timestamp: ${new Date().toLocaleString()}
     const recipients = (channel as any).recipients;
     if (recipients) {
       const participantList = recipients
-        .map((user: any) => `  - ${user.username} (${user.id})`)
+        .map((user: any) => `  - ${user.username}@${user.id}`)
         .join("\n");
       context += `\nParticipants:\n${participantList}\n`;
     }
@@ -171,7 +175,7 @@ Timestamp: ${new Date().toLocaleString()}
     : "";
   let currentMsgContext = `
 === Current Message ===
-Author: ${message.author.username} (${message.author.id})
+Author: ${message.author.username}@${message.author.id}
 Content: ${message.content}${currentAttachmentNote}
 Message ID: ${message.id}
 Created At: ${message.createdAt.toISOString()}`;

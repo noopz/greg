@@ -439,7 +439,7 @@ export async function buildDynamicContext(
 You maintain research files that are updated during idle time. **Check these BEFORE answering factual questions.**
 
 - **Learned patterns**: agent-data/learned-patterns.md — behavioral insights from past interactions
-- **Relationships**: agent-data/relationships/<user-id>.md — per-person notes and context
+- **Relationships**: agent-data/relationships/<user-id>.md — per-person notes (user-id is the numeric Discord ID from the channel context, e.g. "123456789012345678.md")
 
 ## SELF-IMPROVEMENT INSTRUCTIONS
 You can improve yourself by writing to files. Changes take effect on your next response.
@@ -447,7 +447,7 @@ You can improve yourself by writing to files. Changes take effect on your next r
 1. **Memories**: Write to agent-data/memories/<date>.md to remember important things (see CURRENT TIME for today's date)
 2. **Patterns**: Update agent-data/learned-patterns.md when you notice what works/doesn't work
 3. **Skills**: Create .claude/skills/<skill-name>/SKILL.md (see CREATING SKILLS below)
-4. **Relationships**: Write to agent-data/relationships/<user-id>.md to remember things about specific people
+4. **Relationships**: Write to agent-data/relationships/<user-id>.md where user-id is the numeric Discord ID (from channel participants or message author). Example: agent-data/relationships/123456789012345678.md
 5. **Response Triggers**: Edit agent-data/response-triggers.json to add new topics/games you want to engage with
 6. **Custom Subagents**: Create .claude/agents/<agent-name>.md for specialized helpers (see below)
 

@@ -565,7 +565,7 @@ function buildReviewerContinuation(
 function extractLastUserMessage(discordContext: string): string {
   const section = discordContext.match(/=== Current Message ===([\s\S]*?)(?:===|$)/);
   if (section) {
-    const authorMatch = section[1].match(/(?:Author|From): (\S+)/);
+    const authorMatch = section[1].match(/(?:Author|From): (\S+?)(?:@\d+)?[\s\n]/);
     const contentMatch = section[1].match(/Content: (.+)/);
     const author = authorMatch?.[1] ?? "unknown";
     const content = contentMatch?.[1] ?? section[1].trim();
@@ -583,11 +583,12 @@ function extractLastUserMessage(discordContext: string): string {
 function extractRecentSpeakers(discordContext: string): string[] {
   const speakers = new Set<string>();
 
+  // Participants are formatted as "  - username@id"
   const participantsMatch = discordContext.match(/Participants:\s*\n((?:\s+-\s+.+\n?)+)/);
   if (participantsMatch) {
     const lines = participantsMatch[1].split("\n");
     for (const line of lines) {
-      const m = line.match(/^\s+-\s+(\S+)/);
+      const m = line.match(/^\s+-\s+(\S+?)(?:@\d+)?$/);
       if (m && m[1].toLowerCase() !== BOT_NAME_LOWER) {
         speakers.add(m[1]);
       }
@@ -595,9 +596,10 @@ function extractRecentSpeakers(discordContext: string): string[] {
     if (speakers.size > 0) return [...speakers];
   }
 
+  // Messages are formatted as "[username@id]:" or "[BotName]:"
   const recentSection = discordContext.match(/=== Recent Messages[^=]*===\n([\s\S]*?)(?:===|$)/);
   if (recentSection) {
-    const userPattern = /\[([^\]]+)\]:/g;
+    const userPattern = /\[([^\]@]+)(?:@\d+)?\]:/g;
     let match;
     while ((match = userPattern.exec(recentSection[1])) !== null) {
       const name = match[1].trim();

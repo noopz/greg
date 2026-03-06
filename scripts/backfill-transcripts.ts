@@ -122,7 +122,7 @@ function formatUserEntry(msg: DiscordMessage): string {
 Channel ID: ${CHANNEL_ID}
 ${replyContext}
 === Current Message ===
-Author: ${displayName} (${msg.author.id})
+Author: ${displayName}@${msg.author.id}
 Content: ${content}
 Message ID: ${msg.id}`;
 }
@@ -163,7 +163,7 @@ async function main() {
   let totalEntries = 0;
 
   for (const [date, dayMessages] of byDay) {
-    const sessionId = `backfill-${date}`;
+    const sessionId = `backfill-${CHANNEL_ID}-${date}`;
     const transcriptPath = path.join(TRANSCRIPTS_DIR, `${sessionId}.jsonl`);
     const entries: string[] = [];
 

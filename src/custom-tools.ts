@@ -181,7 +181,7 @@ export async function createToolsServer(
             const botId = client.user?.id;
 
             const lines = sorted.map(msg => {
-              const author = msg.author.id === botId ? BOT_NAME : msg.author.username;
+              const author = msg.author.id === botId ? BOT_NAME : `${msg.author.username}@${msg.author.id}`;
               const timestamp = msg.createdAt.toISOString();
               return `[${timestamp}] [${author}]: ${msg.content}`;
             });

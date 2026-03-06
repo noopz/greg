@@ -100,7 +100,7 @@ Review the conversation above and update your knowledge:
    - Key facts, events, or information worth remembering
    - Append, don't overwrite
 
-2. **Relationships** (agent-data/relationships/<user-id>.md)
+2. **Relationships** (agent-data/relationships/<user-id>.md — user-id is the numeric Discord ID, e.g. "123456789012345678.md")
    - New things learned about specific people
    - Communication preferences, boundaries, interests
    - Notable interactions (positive or negative)

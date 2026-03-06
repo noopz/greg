@@ -267,10 +267,10 @@ export function sanitizeResponse(response: string): string {
 
 /**
  * Extract user IDs from Discord context string.
- * Looks for patterns like "username (123456789)" or "(123456789)"
+ * Looks for patterns like "username@123456789" or "username (123456789)" (legacy)
  */
 export function extractUserIds(discordContext: string): string[] {
-  const idPattern = /\((\d{17,20})\)/g;
+  const idPattern = /[@(](\d{17,20})\)?/g;
   const ids: string[] = [];
   let match;
 
