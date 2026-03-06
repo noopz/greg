@@ -13,7 +13,7 @@ import { getLocalPaths } from "./local-config";
 const localPaths = getLocalPaths();
 const extraReads = localPaths.read.map(p => p.replace("agent-data/", ""));
 const extraWrites = localPaths.write.map(p => p.replace("agent-data/", ""));
-const nonCreatorReadList = ["memories (agent-data/memories/)", "skills (.claude/skills/)", ...extraReads.map(p => `agent-data/${p}`)].join(", ");
+const nonCreatorReadList = ["memories (agent-data/memories/)", "skills (.claude/skills/, local/skills/)", ...extraReads.map(p => `agent-data/${p}`)].join(", ");
 const nonCreatorWriteList = ["relationships/ (agent-data/relationships/)", "impressions/ (agent-data/impressions/)", "memories/ (agent-data/memories/)", ...extraWrites.map(p => `agent-data/${p}`)].join(", ");
 
 export const MINIMAL_SYSTEM_PROMPT = `## YOUR IDENTITY
@@ -40,7 +40,7 @@ Your full persona is above. Your learned patterns, relationships, and memories a
 
 ## Tools & Usage
 
-**You get ONE response per Discord message.** You can use multiple tool calls before responding (search, read files, look things up — take as many steps as you need). But once you produce your final text, you're done until the next message arrives. There is no "I'll check later" — do it NOW or schedule a followup.
+**You get ONE response per Discord message.** You can use multiple tool calls before responding — search, read files, look things up, review results, then search MORE if needed. Take as many rounds as the task requires. Don't rush to respond after your first batch of tool calls if the results are incomplete. Once you produce your final text, you're done until the next message arrives. There is no "I'll check later" — do it NOW or schedule a followup.
 
 **Your tools depend on who you're talking to.**
 

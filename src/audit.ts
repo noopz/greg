@@ -13,7 +13,7 @@ import { Client } from "discord.js-selfbot-v13";
 import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SKILLS_DIR, AGENTS_DIR, AGENT_DATA_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR } from "./paths";
+import { SKILLS_DIR, LOCAL_SKILLS_DIR, AGENTS_DIR, AGENT_DATA_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR } from "./paths";
 import { dmCreator } from "./bot-types";
 import { createFileWatcher, closeAllWatchers, type ChangeParams } from "./file-watcher";
 import type { UserId } from "./agent-types";
@@ -323,6 +323,15 @@ export async function startAuditWatcher(
   await Promise.all([
     createFileWatcher(client, creatorId, {
       directory: SKILLS_DIR,
+      fileFilter: (filename) => filename.endsWith("SKILL.md"),
+      entityName: "skill",
+      isDirectoryBased: true,
+      targetFilename: "SKILL.md",
+      recursive: true,
+      handleChange: handleSkillChange,
+    }),
+    createFileWatcher(client, creatorId, {
+      directory: LOCAL_SKILLS_DIR,
       fileFilter: (filename) => filename.endsWith("SKILL.md"),
       entityName: "skill",
       isDirectoryBased: true,
