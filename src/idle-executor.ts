@@ -160,7 +160,7 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
       prompt: idlePrompt,
       options: {
         cwd: PROJECT_DIR,
-        model: behavior.model || "sonnet", // Use skill's declared model, default to sonnet
+        model: behavior.model || "claude-sonnet-4-6", // Use skill's declared model, default to sonnet
         maxTurns: 30,
         maxBudgetUsd: 1.0,
         // NO resume - fresh session each time, prevents context buildup

@@ -204,7 +204,7 @@ Be efficient - only update files if there's something genuinely new to record. R
       prompt: memoryFlushPrompt,
       options: {
         cwd: PROJECT_DIR,
-        model: "sonnet", // Isolated session — only needs to save memories, not converse
+        model: "claude-sonnet-4-6", // Isolated session — only needs to save memories, not converse
         // NO resume - run isolated with just the recent transcript summary
         systemPrompt: memoryFlushSystemPrompt,
         settingSources: ["project"],

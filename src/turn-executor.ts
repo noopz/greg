@@ -163,7 +163,7 @@ export async function executeTurn(
     const systemPromptConfig = buildSystemPromptConfig(persona);
     session.start({
       cwd: PROJECT_DIR,
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
       systemPrompt: systemPromptConfig,
       allowedTools,
       ...(accessHooks ? { hooks: accessHooks } : {}),

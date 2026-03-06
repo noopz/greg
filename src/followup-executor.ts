@@ -81,7 +81,7 @@ You have up to ${MAX_RESEARCH_TURNS} steps (tool calls) to complete this task. U
           prompt,
           options: {
             cwd: PROJECT_DIR,
-            model: "sonnet", // Always sonnet for cost control, even if main session changes
+            model: "claude-sonnet-4-6", // Always sonnet for cost control, even if main session changes
             resume: sessionId,
             forkSession: true,
             allowedTools: [

@@ -462,9 +462,6 @@ async function deliverResponse(
       break;
     case "error":
       logError("SEND", `msg=${triggerMsgId} → error`, result.error);
-      if (mustRespond) {
-        await message.channel.send("brain.exe has stopped working");
-      }
       break;
   }
 }
@@ -501,7 +498,6 @@ export async function handleMessage(
       });
     } catch (err) {
       logError("ERROR", "Processing message", err);
-      await message.channel.send("brain.exe has stopped working");
     }
     return;
   }
@@ -542,9 +538,6 @@ export async function handleMessage(
     });
   } catch (err) {
     logError("ERROR", "Processing message", err);
-    if (mustRespond) {
-      await message.channel.send("brain.exe has stopped working");
-    }
   }
 }
 
