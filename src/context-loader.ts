@@ -434,6 +434,14 @@ export async function buildDynamicContext(
 
   // Static instruction blocks (~3.5k chars) — only needed on first turn of a streaming
   // session. On continuation turns they're already in SDK history from turn 1.
+  // A condensed reminder is injected on continuations to prevent behavioral drift.
+  const continuationReminder = streamingContinuation ? `## REMINDER
+- To change behavior: Edit agent-data/learned-patterns.md or agent-data/persona.md
+- To remember something: Write to agent-data/memories/${today}.md
+- To update a relationship: Write to agent-data/relationships/<user-id>.md
+- Action verbs (update, remember, change, improve) MUST have a matching tool call or you're lying
+- Don't promise future changes — write the change NOW or be honest you can't
+` : "";
   const staticInstructions = streamingContinuation ? "" : `
 ## YOUR KNOWLEDGE FILES
 You maintain research files that are updated during idle time. **Check these BEFORE answering factual questions.**
@@ -535,7 +543,7 @@ Your custom agents in .claude/agents/ are automatically available via Task tool.
 
 `;
 
-  return `${staticInstructions}${patterns !== null ? `## PATTERNS YOU'VE LEARNED
+  return `${staticInstructions}${continuationReminder}${patterns !== null ? `## PATTERNS YOU'VE LEARNED
 ${patterns}
 ` : ""}${relationshipsBlock !== null ? `${relationshipsBlock}
 ` : ""}${impressionsBlock !== null ? `
