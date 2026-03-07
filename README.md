@@ -4,15 +4,28 @@ A self-learning Discord bot built on the [Claude Agent SDK](https://docs.anthrop
 
 This is a **selfbot** (runs as a user account, not a bot account). It uses `discord.js-selfbot-v13` to connect to Discord.
 
-## What it does
+> **Disclaimer:** This project is provided for **educational and research purposes only**. Selfbots violate Discord's Terms of Service. I am not responsible for any Discord accounts that are suspended or banned as a result of using this software. No support is provided. Use entirely at your own risk.
 
-- **Persistent identity** — persona, learned patterns, and memories stored on disk, hot-reloaded every turn
-- **Streaming sessions** — long-lived Claude sessions with full conversation context
-- **Idle behaviors** — skill-based autonomous actions (research, memory maintenance, conversation starters) that run on configurable cooldowns
-- **Tool use** — GIF search, transcript search (FTS5), background research tasks, file operations, web search
-- **Access control** — creator gets full access, other users are path-gated (can read/write specific files, can't run shell commands)
+## What makes it different
+
+Most AI bots are stateless assistants — they answer questions and forget you exist. Greg is designed to be a **persistent member of your friend group**:
+
+- **Remembers everything** — writes memories to disk, maintains per-user relationship notes, tracks conversation patterns. Ask about something from two weeks ago and it knows.
+- **Learns and adapts** — updates its own behavioral patterns based on what works and what doesn't. Gets better at matching your group's vibe over time.
+- **Acts, doesn't just talk** — uses tools (GIF search, web search, file operations, transcript search) on its own initiative. A post-turn reviewer catches missed opportunities and retries.
+- **Has downtime behaviors** — when nobody's talking, it researches topics, maintains memories, consolidates patterns, or starts conversations based on configurable idle skills.
+- **Knows its boundaries** — access control gives the creator full file/shell access while other users are path-gated to safe operations.
+
+## Features
+
+- **Streaming sessions** — long-lived Claude sessions via the Agent SDK with full conversation context
+- **Turn queue** — debouncing, message coalescing, and transient error retry
+- **Response gate** — decides whether to respond using conversation confidence tracking (not every message needs a reply)
 - **Self-improvement** — writes memories, updates relationship files, refines behavioral patterns, creates new skills and subagents
-- **Post-turn review** — Haiku reviewer checks if the bot missed a tool opportunity and retries when appropriate
+- **Idle behaviors** — skill-based autonomous actions with configurable cooldowns
+- **Tool use** — GIF search, transcript search (FTS5), background research tasks, file operations, web search
+- **Post-turn review** — Haiku reviewer with ReAct loop checks for missed tool opportunities
+- **Access control** — PreToolUse hooks enforce path restrictions for non-creator users
 
 ## Requirements
 
@@ -43,7 +56,7 @@ bun run start        # Production
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | Yes | Discord user token (DevTools → Network → Authorization header) |
 | `CREATOR_USER_ID` | Yes | Your Discord user ID (right-click → Copy User ID) |
-| `GROUP_DM_CHANNEL_ID` | Yes | Channel ID where the bot operates (from URL) |
+| `CHANNEL_IDS` | Yes | Comma-separated Discord channel IDs to watch (from URL) |
 | `BOT_NAME` | No | Display name (default: "Greg") |
 | `KLIPY_API_KEY` | No | GIF search via [Klipy](https://partner.klipy.com/api-keys) (free) |
 | `ENABLE_IMAGES` | No | Set to "1" to enable image vision |
@@ -51,13 +64,13 @@ bun run start        # Production
 
 ### Initial persona
 
-On first run, the bot needs an identity. A starter `agent-data/persona.md` is included — **you must customize it**:
+On first run, the bot needs an identity. A **sample** `agent-data/persona.md` is included as a starting point — it's an example personality, not something you should run as-is. **You must customize it:**
 
 1. Update the **name** and **Discord username** on line 5 to match your bot's Discord account
 2. Update the **trigger words** on line 6 (these are the names/phrases the bot responds to)
-3. Customize the personality to fit your bot
+3. **Rewrite the personality** to fit your bot — the sample persona is just one example of what's possible. Make it your own.
 
-The persona is loaded into every conversation turn and defines how the bot behaves.
+The persona is loaded into every conversation turn and defines how the bot behaves. The more thought you put into it, the more distinct your bot will feel.
 
 Other optional files in `agent-data/`:
 - `learned-patterns.md` — behavioral insights the bot accumulates
