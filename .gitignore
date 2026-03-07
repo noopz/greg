@@ -50,6 +50,17 @@ Thumbs.db
 *.swo
 *~
 agent-data/greg-config-effective.json
+agent-data/runtime-config-effective.json
+agent-data/config-baseline.json
+agent-data/reaction-feedback.jsonl
+agent-data/transcript-index.db
+agent-data/transcript-index.db-shm
+agent-data/transcript-index.db-wal
+agent-data/greg-tools.md
+agent-data/hypotheses.md
+agent-data/values-integrity.md
+agent-data/game-ownership.md
+agent-data/impressions/*.md
 
 # Cross-file index (local dev artifact)
 .strata/

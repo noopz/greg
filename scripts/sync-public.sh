@@ -26,7 +26,8 @@
 #   - .claude/       — framework skills and agents
 #   - scripts/       — utility scripts (including this one)
 #   - Config files   — package.json, bun.lock, tsconfig, knip, etc.
-#   - Docs           — CLAUDE.md, DEVELOPMENT.md, README.md, .env.example
+#   - Docs           — DEVELOPMENT.md, README.md, .env.example
+#   NOT synced: CLAUDE.md (contains private workflow instructions)
 #
 # WHAT NEVER SYNCS:
 #   - local/         — personal skills, plugins, config, docs
@@ -62,7 +63,6 @@ SYNC_FILES=(
   knip.json
   .env.example
   .gitignore
-  CLAUDE.md
   DEVELOPMENT.md
   README.md
 )
