@@ -51,7 +51,13 @@ bun run start        # Production
 
 ### Initial persona
 
-On first run, the bot needs an identity. Create `agent-data/persona.md` with your bot's personality definition. See the codebase for the expected format — the persona is loaded into every conversation turn.
+On first run, the bot needs an identity. A starter `agent-data/persona.md` is included — **you must customize it**:
+
+1. Update the **name** and **Discord username** on line 5 to match your bot's Discord account
+2. Update the **trigger words** on line 6 (these are the names/phrases the bot responds to)
+3. Customize the personality to fit your bot
+
+The persona is loaded into every conversation turn and defines how the bot behaves.
 
 Other optional files in `agent-data/`:
 - `learned-patterns.md` — behavioral insights the bot accumulates
