@@ -9,9 +9,10 @@
  * - LOG_MAX_SIZE_MB: max file size before rotation (default: 50)
  */
 
-import { appendFileSync, mkdirSync, existsSync, statSync, renameSync } from "fs";
+import { appendFileSync, mkdirSync, existsSync, renameSync, statSync } from "fs";
 import { join } from "path";
-import { LOGS_DIR } from "./paths";
+import pc from "picocolors";
+import { localDate, LOGS_DIR } from "./paths";
 import { redactCredentials } from "./security";
 const LOG_BOT_NAME = (process.env.BOT_NAME || "Greg").toLowerCase();
 const LOG_TO_FILE = process.env.LOG_TO_FILE !== "false";
@@ -24,12 +25,34 @@ if (LOG_TO_FILE && !existsSync(LOGS_DIR)) {
   mkdirSync(LOGS_DIR, { recursive: true });
 }
 
+const TAG_COLORS: Record<string, (s: string) => string> = {
+  // Core pipeline
+  MSG: pc.blue,    PIPELINE: pc.blue,  SEND: pc.blue,
+  STREAM: pc.cyan, QUEUE: pc.cyan,
+  // Routing
+  BUFFER: pc.yellow, CLASSIFY: pc.yellow, ROUTE: pc.yellow, GATE: pc.yellow,
+  // Agent/SDK
+  SDK: pc.green,   MCP: pc.green,  CONTEXT: pc.green,
+  CONVO: pc.green, ENERGY: pc.green,
+  // Idle
+  IDLE: pc.magenta, FOLLOWUP: pc.magenta,
+  // Safety
+  SECURITY: pc.red, REVIEWER: pc.red,
+  // Infrastructure
+  CONFIG: pc.gray,  READY: pc.green, SHUTDOWN: pc.red,
+  KILL: pc.red,     TYPING: pc.gray, STARTUP: pc.red,
+  // Data
+  FTS: pc.gray, Impressions: pc.gray, Config: pc.gray,
+  AUDIT: pc.gray, TRIGGERS: pc.gray,
+  // Errors
+  DISCORD: pc.red, PROCESS: pc.red,
+};
+
 /**
  * Get the current log file path (daily rotation)
  */
 function getLogFilePath(): string {
-  const date = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
-  return join(LOGS_DIR, `${LOG_BOT_NAME}-${date}.log`);
+  return join(LOGS_DIR, `${LOG_BOT_NAME}-${localDate()}.log`);
 }
 
 /**
@@ -37,8 +60,6 @@ function getLogFilePath(): string {
  */
 function rotateIfNeeded(filePath: string): void {
   try {
-    if (!existsSync(filePath)) return;
-
     const stats = statSync(filePath);
     if (stats.size >= MAX_LOG_SIZE_BYTES) {
       // Rotate: rename current to .1, .2, etc.
@@ -84,21 +105,36 @@ function formatTimestamp(): string {
 }
 
 /**
+ * Get the color function for a tag, defaulting to white
+ */
+function colorForTag(tag: string): (s: string) => string {
+  return TAG_COLORS[tag] || pc.white;
+}
+
+/**
  * Log an info message with timestamp
  */
 export function log(tag: string, message: string): void {
-  const line = `[${formatTimestamp()}] [${tag}] ${message}`;
-  console.log(redactCredentials(line));
-  writeToFile(line);
+  const timestamp = formatTimestamp();
+  const plain = `[${timestamp}] [${tag}] ${message}`;
+  writeToFile(plain);
+  console.log(`${pc.dim(`[${timestamp}]`)} ${colorForTag(tag)(`[${tag}]`)} ${redactCredentials(message)}`);
 }
 
 /**
  * Log a warning message with timestamp
  */
-export function warn(tag: string, message: string): void {
-  const line = `[${formatTimestamp()}] [${tag}] ⚠️  ${message}`;
-  console.warn(redactCredentials(line));
-  writeToFile(line);
+export function warn(tag: string, message: string, err?: unknown): void {
+  const timestamp = formatTimestamp();
+  const plain = `[${timestamp}] [${tag}] ${message}`;
+  if (err) {
+    const errStr = err instanceof Error ? err.stack || err.message : String(err);
+    console.warn(`${pc.dim(`[${timestamp}]`)} ${pc.yellow(`[${tag}]`)} ${pc.yellow(redactCredentials(message))}`, redactCredentials(errStr));
+    writeToFile(`${plain} ${errStr}`);
+  } else {
+    console.warn(`${pc.dim(`[${timestamp}]`)} ${pc.yellow(`[${tag}]`)} ${pc.yellow(redactCredentials(message))}`);
+    writeToFile(plain);
+  }
 }
 
 /**
@@ -112,20 +148,21 @@ export function logFull(tag: string, prefix: string, fullMessage: string, consol
   const truncated = fullMessage.length > consoleMaxChars
     ? fullMessage.substring(0, consoleMaxChars) + `... (${fullMessage.length} chars total, see log file for full output)`
     : fullMessage;
-  console.log(redactCredentials(`[${timestamp}] [${tag}] ${prefix}${truncated}`));
+  console.log(`${pc.dim(`[${timestamp}]`)} ${colorForTag(tag)(`[${tag}]`)} ${redactCredentials(`${prefix}${truncated}`)}`);
 }
 
 /**
  * Log an error message with timestamp
  */
 export function error(tag: string, message: string, err?: unknown): void {
-  const line = `[${formatTimestamp()}] [${tag}] ❌ ${message}`;
+  const timestamp = formatTimestamp();
+  const plain = `[${timestamp}] [${tag}] ${message}`;
   if (err) {
     const errStr = err instanceof Error ? err.stack || err.message : String(err);
-    console.error(redactCredentials(line), redactCredentials(errStr));
-    writeToFile(`${line} ${errStr}`);
+    console.error(`${pc.dim(`[${timestamp}]`)} ${pc.red(`[${tag}]`)} ${pc.red(redactCredentials(message))}`, redactCredentials(errStr));
+    writeToFile(`${plain} ${errStr}`);
   } else {
-    console.error(redactCredentials(line));
-    writeToFile(line);
+    console.error(`${pc.dim(`[${timestamp}]`)} ${pc.red(`[${tag}]`)} ${pc.red(redactCredentials(message))}`);
+    writeToFile(plain);
   }
 }

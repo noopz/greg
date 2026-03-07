@@ -180,10 +180,15 @@ export async function executeTurn(
     setSearchContextForSession(session.sessionId, options.channelId, options.isCreator, options.isGroupDm);
   }
 
-  // Yield message and wait for response
-  log("SDK", `[STREAMING] Yielding message msg=${msgId}...`);
+  // Yield message and wait for response (mutex-protected)
+  log("SDK", `[STREAMING] Acquiring session mutex msg=${msgId}...`);
+  await session.acquire();
+  log("SDK", `[STREAMING] Mutex acquired, yielding message msg=${msgId}...`);
   const yieldStart = Date.now();
   let boundary: ResponseBoundary;
+  let response: string;
+  let toolNamesUsed: Set<string>;
+  let resultMessage: SDKResultMessage | null;
   try {
     if (options.imageBlocks && options.imageBlocks.length > 0) {
       const contentBlocks: ContentBlock[] = [
@@ -195,8 +200,241 @@ export async function executeTurn(
       session.yieldMessage(prompt, config.typingCallback);
     }
     boundary = await session.waitForResponse();
+
+    const responseTime = ((Date.now() - yieldStart) / 1000).toFixed(1);
+    response = boundary.responseText;
+    toolNamesUsed = boundary.toolNamesUsed;
+    resultMessage = boundary.resultMessage;
+
+    log("SDK", `[STREAMING] Response received msg=${msgId} in ${responseTime}s. Length: ${response.length}, tools: [${[...toolNamesUsed].join(", ")}]`);
+
+    // On first turn: capture session ID now that init has been received
+    if (isNewSession && session.sessionId) {
+      setCurrentSessionId(session.sessionId);
+      await saveSessionId(session.sessionId);
+      log("SDK", `[STREAMING] Session bootstrapped: ${session.sessionId}`);
+      setSearchContextForSession(session.sessionId, options.channelId, options.isCreator, options.isGroupDm);
+    }
+
+    // Get transcript file (now that session ID is available)
+    const activeSessionId = session.sessionId ?? getCurrentSessionId();
+    const activeTranscriptFile = activeSessionId
+      ? getTranscriptPath(TRANSCRIPTS_DIR, activeSessionId)
+      : null;
+
+    // Append user message to transcript
+    if (activeTranscriptFile) {
+      try {
+        const userEntry: TranscriptEntry = {
+          type: "user",
+          content: discordContext,
+          timestamp: Date.now(),
+          metadata: {
+            channelId: options.channelId,
+            isGroupDm: options.isGroupDm,
+            mustRespond: options.mustRespond,
+          },
+        };
+        await appendToTranscript(activeTranscriptFile, userEntry);
+      } catch (err) {
+        logError("SDK", "Failed to append user message to transcript", err);
+      }
+    }
+
+    // Update token usage
+    if (resultMessage) {
+      try {
+        await updateTokenUsage(resultMessage, boundary.lastCallInputTokens);
+      } catch (err) {
+        logError("SDK", "Failed to update token usage", err);
+      }
+    }
+
+    // Post-turn session teardown checks
+    try {
+      if (getShouldStartFreshSession()) {
+        log("SDK", "[STREAMING] Memory flush requested fresh session — will restart");
+        session.close();
+        setCurrentSessionId(undefined);
+        clearShouldStartFreshSession();
+        resetSessionSnapshot();
+        rollHypothesisInclusion();
+      } else if (activeSessionId) {
+        const sessionData = await loadSessionData();
+        const currentTokens = sessionData?.totalTokens ?? 0;
+        if (currentTokens >= 150000) {
+          log("SDK", `[STREAMING] Token threshold reached (${currentTokens}) — will restart session`);
+          session.close();
+          setCurrentSessionId(undefined);
+          resetSessionSnapshot();
+          rollHypothesisInclusion();
+        } else {
+          const dirtiness = checkContextDirtiness();
+          if (dirtiness.needsFreshSession) {
+            log("SDK", "[STREAMING] Context files changed — will restart session");
+            session.close();
+            setCurrentSessionId(undefined);
+            resetSessionSnapshot();
+            rollHypothesisInclusion();
+            // If persona/patterns changed, close BOTH sessions
+            const otherSession = options.isCreator ? getStreamingSession(false) : getStreamingSession(true);
+            if (otherSession.isAlive()) {
+              log("SDK", "[STREAMING] Also restarting the other session (shared context changed)");
+              otherSession.close();
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logError("SDK", "Post-turn teardown check failed", err);
+    }
+
+    // ---- Post-turn Haiku reviewer (ReAct Observe step) ----
+    if (response.length >= 20 && !options.isFollowUp) {
+      const visible = response.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      const hasVisibleResponse = visible.length >= 20 && visible !== "[NO_RESPONSE]";
+      const toolsUsedButNoResponse = toolNamesUsed.size > 0 && (visible === "[NO_RESPONSE]" || visible.length < 20);
+      const isQuestion = visible.length > 0 && visible.includes("?");
+
+      if (hasVisibleResponse || toolsUsedButNoResponse || isQuestion) {
+        // Keep typing indicator alive during reviewer
+        const typingCb = config.typingCallback;
+        const reviewerTypingInterval = typingCb
+          ? setInterval(() => typingCb(""), 8_000)
+          : null;
+        typingCb?.("");
+
+        let missed: Awaited<ReturnType<typeof reviewTurn>>;
+        try {
+          missed = await reviewTurn({
+            userMessage: extractLastUserMessage(discordContext),
+            responseText: toolsUsedButNoResponse ? `[NO_RESPONSE] (but used tools: ${[...toolNamesUsed].join(", ")})` : visible,
+            toolNamesUsed,
+            channelId: options.channelId,
+            recentSpeakers: extractRecentSpeakers(discordContext),
+            isGroupDm: options.isGroupDm ?? false,
+          });
+        } catch (err) {
+          warn("SDK", `[STREAMING] Initial reviewTurn failed: ${err instanceof Error ? err.message : String(err)}`);
+          missed = [];
+        }
+
+        const MAX_REACT_ITERATIONS = 2;
+        let reactIteration = 0;
+        let currentMissed = missed;
+        let sentReplacement = false;
+
+        while (currentMissed.length > 0 && reactIteration < MAX_REACT_ITERATIONS) {
+          reactIteration++;
+          log("SDK", `[STREAMING] ReAct iteration ${reactIteration}: ${currentMissed.length} issue(s)`);
+
+          if (!session.isAlive()) break;
+
+          const continuationPrompt = buildReviewerContinuation(currentMissed, options.channelId, options.imageBlocks);
+
+          try {
+            session.yieldMessage(continuationPrompt);
+            const contBoundary = await session.waitForResponse(60_000);
+
+            for (const toolName of contBoundary.toolNamesUsed) {
+              toolNamesUsed.add(toolName);
+              const shortName = toolName.replace(/^mcp__[^_]+__/, "");
+              if (shortName === "send_to_channel") {
+                sentReplacement = true;
+              }
+            }
+
+            log("SDK", `[STREAMING] ReAct iteration ${reactIteration}: ${contBoundary.toolNamesUsed.size} tool(s), sent replacement: ${sentReplacement}`);
+
+            // Re-run reviewer on continuation
+            if (reactIteration < MAX_REACT_ITERATIONS && contBoundary.toolNamesUsed.size > 0) {
+              const reviewText = sentReplacement
+                ? `[Original response suppressed — sent replacement via send_to_channel]`
+                : `${visible}\n[Continuation used tools: ${[...toolNamesUsed].join(", ")}]`;
+
+              currentMissed = await reviewTurn({
+                userMessage: extractLastUserMessage(discordContext),
+                responseText: reviewText.substring(0, 500),
+                toolNamesUsed,
+                channelId: options.channelId,
+                recentSpeakers: extractRecentSpeakers(discordContext),
+                isGroupDm: options.isGroupDm ?? false,
+              });
+            } else {
+              currentMissed = [];
+            }
+          } catch (err) {
+            warn("SDK", `[STREAMING] ReAct iteration ${reactIteration} failed: ${err instanceof Error ? err.message : String(err)}`);
+            sentReplacement = false;
+            break;
+          }
+        }
+
+        if (reactIteration > 0) {
+          const allAdditive = missed.every(m => isAdditiveTool(m.tool));
+          log("SDK", `[STREAMING] ReAct loop completed after ${reactIteration} iteration(s), sent replacement: ${sentReplacement}, all additive: ${allAdditive}`);
+
+          if (sentReplacement && !allAdditive) {
+            log("SDK", "[STREAMING] Suppressing original response — corrective continuation sent replacement");
+            response = "[NO_RESPONSE]";
+          } else if (sentReplacement && allAdditive) {
+            log("SDK", "[STREAMING] Keeping original response — additive continuation sent separately");
+          }
+        }
+
+        if (reviewerTypingInterval) clearInterval(reviewerTypingInterval);
+      }
+    }
+
+    // Check for NO_RESPONSE
+    const noResponse = isNoResponse(response);
+
+    // Append assistant response to transcript
+    if (activeTranscriptFile) {
+      try {
+        const assistantEntry: TranscriptEntry = {
+          type: "assistant",
+          content: noResponse ? "[NO_RESPONSE]" : response.trim(),
+          timestamp: Date.now(),
+          metadata: {
+            channelId: options.channelId,
+            responseLength: response.length,
+          },
+        };
+        await appendToTranscript(activeTranscriptFile, assistantEntry);
+      } catch (err) {
+        logError("SDK", "Failed to append assistant response to transcript", err);
+      }
+    }
+
+    if (noResponse) {
+      return { kind: "no_response", toolNamesUsed };
+    }
+
+    // Context refresh check
+    if (config.contextRefreshCallback) {
+      try {
+        const refreshResult = await config.contextRefreshCallback();
+        if (refreshResult.shouldSkip) {
+          return { kind: "skipped", reason: "stale context" };
+        }
+        if (refreshResult.acknowledgment) {
+          const sanitized = sanitizeResponse(response.trim());
+          return { kind: "response", text: `${refreshResult.acknowledgment}\n\n${sanitized}`, toolNamesUsed };
+        }
+      } catch (err) {
+        logError("SDK", "Context refresh failed", err);
+      }
+    }
+
+    const sanitized = sanitizeResponse(response.trim());
+    if (!sanitized) {
+      return { kind: "skipped", reason: "empty after sanitize" };
+    }
+    return { kind: "response", text: sanitized, toolNamesUsed };
+
   } catch (err) {
-    logError("SDK", `[STREAMING] waitForResponse failed after ${((Date.now() - yieldStart) / 1000).toFixed(1)}s`, err);
+    logError("SDK", `[STREAMING] Turn execution failed after ${((Date.now() - yieldStart) / 1000).toFixed(1)}s`, err);
 
     // Close the session on any failure — prevents zombie sessions
     if (session.isAlive()) {
@@ -207,229 +445,9 @@ export async function executeTurn(
     }
 
     return { kind: "error", error: err instanceof Error ? err : new Error(String(err)) };
+  } finally {
+    session.release();
   }
-
-  const responseTime = ((Date.now() - yieldStart) / 1000).toFixed(1);
-  let response = boundary.responseText;
-  const toolNamesUsed = boundary.toolNamesUsed;
-  const resultMessage = boundary.resultMessage;
-
-  log("SDK", `[STREAMING] Response received msg=${msgId} in ${responseTime}s. Length: ${response.length}, tools: [${[...toolNamesUsed].join(", ")}]`);
-
-  // On first turn: capture session ID now that init has been received
-  if (isNewSession && session.sessionId) {
-    setCurrentSessionId(session.sessionId);
-    await saveSessionId(session.sessionId);
-    log("SDK", `[STREAMING] Session bootstrapped: ${session.sessionId}`);
-    setSearchContextForSession(session.sessionId, options.channelId, options.isCreator, options.isGroupDm);
-  }
-
-  // Get transcript file (now that session ID is available)
-  const activeSessionId = session.sessionId ?? getCurrentSessionId();
-  const activeTranscriptFile = activeSessionId
-    ? getTranscriptPath(TRANSCRIPTS_DIR, activeSessionId)
-    : null;
-
-  // Append user message to transcript
-  if (activeTranscriptFile) {
-    try {
-      const userEntry: TranscriptEntry = {
-        type: "user",
-        content: discordContext,
-        timestamp: Date.now(),
-        metadata: {
-          channelId: options.channelId,
-          isGroupDm: options.isGroupDm,
-          mustRespond: options.mustRespond,
-        },
-      };
-      await appendToTranscript(activeTranscriptFile, userEntry);
-    } catch (err) {
-      logError("SDK", "Failed to append user message to transcript", err);
-    }
-  }
-
-  // Update token usage
-  if (resultMessage) {
-    try {
-      await updateTokenUsage(resultMessage, boundary.lastCallInputTokens);
-    } catch (err) {
-      logError("SDK", "Failed to update token usage", err);
-    }
-  }
-
-  // Post-turn session teardown checks
-  if (getShouldStartFreshSession()) {
-    log("SDK", "[STREAMING] Memory flush requested fresh session — will restart");
-    session.close();
-    setCurrentSessionId(undefined);
-    clearShouldStartFreshSession();
-    resetSessionSnapshot();
-    rollHypothesisInclusion();
-  } else if (activeSessionId) {
-    const sessionData = await loadSessionData();
-    const currentTokens = sessionData?.totalTokens ?? 0;
-    if (currentTokens >= 150000) {
-      log("SDK", `[STREAMING] Token threshold reached (${currentTokens}) — will restart session`);
-      session.close();
-      setCurrentSessionId(undefined);
-      resetSessionSnapshot();
-      rollHypothesisInclusion();
-    } else {
-      const dirtiness = checkContextDirtiness();
-      if (dirtiness.needsFreshSession) {
-        log("SDK", "[STREAMING] Context files changed — will restart session");
-        session.close();
-        setCurrentSessionId(undefined);
-        resetSessionSnapshot();
-        rollHypothesisInclusion();
-        // If persona/patterns changed, close BOTH sessions
-        const otherSession = options.isCreator ? getStreamingSession(false) : getStreamingSession(true);
-        if (otherSession.isAlive()) {
-          log("SDK", "[STREAMING] Also restarting the other session (shared context changed)");
-          otherSession.close();
-        }
-      }
-    }
-  }
-
-  // ---- Post-turn Haiku reviewer (ReAct Observe step) ----
-  if (response.length >= 20 && !options.isFollowUp) {
-    const visible = response.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    const hasVisibleResponse = visible.length >= 20 && visible !== "[NO_RESPONSE]";
-    const toolsUsedButNoResponse = toolNamesUsed.size > 0 && (visible === "[NO_RESPONSE]" || visible.length < 20);
-    const isQuestion = visible.length > 0 && visible.includes("?");
-
-    if (hasVisibleResponse || toolsUsedButNoResponse || isQuestion) {
-      // Keep typing indicator alive during reviewer
-      const typingCb = config.typingCallback;
-      const reviewerTypingInterval = typingCb
-        ? setInterval(() => typingCb(""), 8_000)
-        : null;
-      typingCb?.("");
-
-      const missed = await reviewTurn({
-        userMessage: extractLastUserMessage(discordContext),
-        responseText: toolsUsedButNoResponse ? `[NO_RESPONSE] (but used tools: ${[...toolNamesUsed].join(", ")})` : visible,
-        toolNamesUsed,
-        channelId: options.channelId,
-        recentSpeakers: extractRecentSpeakers(discordContext),
-        isGroupDm: options.isGroupDm ?? false,
-      });
-
-      const MAX_REACT_ITERATIONS = 2;
-      let reactIteration = 0;
-      let currentMissed = missed;
-      let sentReplacement = false;
-
-      while (currentMissed.length > 0 && reactIteration < MAX_REACT_ITERATIONS) {
-        reactIteration++;
-        log("SDK", `[STREAMING] ReAct iteration ${reactIteration}: ${currentMissed.length} issue(s)`);
-
-        if (!session.isAlive()) break;
-
-        const continuationPrompt = buildReviewerContinuation(currentMissed, options.channelId, options.imageBlocks);
-
-        try {
-          session.yieldMessage(continuationPrompt);
-          const contBoundary = await session.waitForResponse(60_000);
-
-          for (const toolName of contBoundary.toolNamesUsed) {
-            toolNamesUsed.add(toolName);
-            const shortName = toolName.replace(/^mcp__[^_]+__/, "");
-            if (shortName === "send_to_channel") {
-              sentReplacement = true;
-            }
-          }
-
-          log("SDK", `[STREAMING] ReAct iteration ${reactIteration}: ${contBoundary.toolNamesUsed.size} tool(s), sent replacement: ${sentReplacement}`);
-
-          // Re-run reviewer on continuation
-          if (reactIteration < MAX_REACT_ITERATIONS && contBoundary.toolNamesUsed.size > 0) {
-            const reviewText = sentReplacement
-              ? `[Original response suppressed — sent replacement via send_to_channel]`
-              : `${visible}\n[Continuation used tools: ${[...toolNamesUsed].join(", ")}]`;
-
-            currentMissed = await reviewTurn({
-              userMessage: extractLastUserMessage(discordContext),
-              responseText: reviewText.substring(0, 500),
-              toolNamesUsed,
-              channelId: options.channelId,
-              recentSpeakers: extractRecentSpeakers(discordContext),
-              isGroupDm: options.isGroupDm ?? false,
-            });
-          } else {
-            currentMissed = [];
-          }
-        } catch (err) {
-          warn("SDK", `[STREAMING] ReAct iteration ${reactIteration} failed: ${err instanceof Error ? err.message : String(err)}`);
-          sentReplacement = false;
-          break;
-        }
-      }
-
-      if (reactIteration > 0) {
-        const allAdditive = missed.every(m => isAdditiveTool(m.tool));
-        log("SDK", `[STREAMING] ReAct loop completed after ${reactIteration} iteration(s), sent replacement: ${sentReplacement}, all additive: ${allAdditive}`);
-
-        if (sentReplacement && !allAdditive) {
-          log("SDK", "[STREAMING] Suppressing original response — corrective continuation sent replacement");
-          response = "[NO_RESPONSE]";
-        } else if (sentReplacement && allAdditive) {
-          log("SDK", "[STREAMING] Keeping original response — additive continuation sent separately");
-        }
-      }
-
-      if (reviewerTypingInterval) clearInterval(reviewerTypingInterval);
-    }
-  }
-
-  // Check for NO_RESPONSE
-  const noResponse = isNoResponse(response);
-
-  // Append assistant response to transcript
-  if (activeTranscriptFile) {
-    try {
-      const assistantEntry: TranscriptEntry = {
-        type: "assistant",
-        content: noResponse ? "[NO_RESPONSE]" : response.trim(),
-        timestamp: Date.now(),
-        metadata: {
-          channelId: options.channelId,
-          responseLength: response.length,
-        },
-      };
-      await appendToTranscript(activeTranscriptFile, assistantEntry);
-    } catch (err) {
-      logError("SDK", "Failed to append assistant response to transcript", err);
-    }
-  }
-
-  if (noResponse) {
-    return { kind: "no_response", toolNamesUsed };
-  }
-
-  // Context refresh check
-  if (config.contextRefreshCallback) {
-    try {
-      const refreshResult = await config.contextRefreshCallback();
-      if (refreshResult.shouldSkip) {
-        return { kind: "skipped", reason: "stale context" };
-      }
-      if (refreshResult.acknowledgment) {
-        const sanitized = sanitizeResponse(response.trim());
-        return { kind: "response", text: `${refreshResult.acknowledgment}\n\n${sanitized}`, toolNamesUsed };
-      }
-    } catch (err) {
-      logError("SDK", "Context refresh failed", err);
-    }
-  }
-
-  const sanitized = sanitizeResponse(response.trim());
-  if (!sanitized) {
-    return { kind: "skipped", reason: "empty after sanitize" };
-  }
-  return { kind: "response", text: sanitized, toolNamesUsed };
 }
 
 // ============================================================================

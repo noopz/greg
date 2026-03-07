@@ -81,6 +81,10 @@ function isTransientError(error: Error): boolean {
   if (/\b(500|502|503|529)\b/.test(msg)) return true;
   // Anthropic overload
   if (/overloaded/i.test(msg)) return true;
+  // Streaming session stalls and unexpected closures
+  if (/SDK stalled/.test(msg)) return true;
+  if (/^Session closed$/.test(msg)) return true;
+  if (/Session ended unexpectedly/.test(msg)) return true;
   return false;
 }
 

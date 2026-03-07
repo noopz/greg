@@ -17,6 +17,7 @@ import { SKILLS_DIR, LOCAL_SKILLS_DIR, AGENTS_DIR, AGENT_DATA_DIR, RELATIONSHIPS
 import { dmCreator } from "./bot-types";
 import { createFileWatcher, closeAllWatchers, type ChangeParams } from "./file-watcher";
 import type { UserId } from "./agent-types";
+import { log, error } from "./log";
 
 // ============================================================================
 // Configuration
@@ -148,14 +149,14 @@ async function handleSkillChange({ filename, content, oldContent, isNew }: Chang
   if (isNew) {
     const description = frontmatter.description || extractDescription(content);
     const desc = description.length > 100 ? description.substring(0, 97) + "..." : description;
-    console.log(`[AUDIT] New skill: ${skillName}`);
+    log("AUDIT", `New skill: ${skillName}`);
     return `[Audit] New skill: **${skillName}** - ${desc}`;
   }
 
   const addedLines = getAddedLines(oldContent, content);
   if (addedLines.length === 0) return null;
   const summary = summarizeChanges(addedLines);
-  console.log(`[AUDIT] Skill updated: ${skillName}`);
+  log("AUDIT", `Skill updated: ${skillName}`);
   return `[Audit] Skill **${skillName}** updated: ${summary}`;
 }
 
@@ -168,14 +169,14 @@ async function handleAgentChange({ filename, content, oldContent, isNew }: Chang
   if (isNew) {
     const description = extractDescription(content);
     const desc = description.length > 100 ? description.substring(0, 97) + "..." : description;
-    console.log(`[AUDIT] New agent: ${agentName}`);
+    log("AUDIT", `New agent: ${agentName}`);
     return `[Audit] New agent: **${agentName}** - ${desc}`;
   }
 
   const addedLines = getAddedLines(oldContent, content);
   if (addedLines.length === 0) return null;
   const summary = summarizeChanges(addedLines);
-  console.log(`[AUDIT] Agent updated: ${agentName}`);
+  log("AUDIT", `Agent updated: ${agentName}`);
   return `[Audit] Agent **${agentName}** updated: ${summary}`;
 }
 
@@ -187,14 +188,14 @@ async function handleRelationshipChange({ filename, content, oldContent, isNew }
 
   if (isNew) {
     const summary = summarizeChanges(content.split('\n'));
-    console.log(`[AUDIT] Relationship created: ${userId}`);
+    log("AUDIT", `Relationship created: ${userId}`);
     return `[Audit] Learning about <@${userId}>: ${summary}`;
   }
 
   const addedLines = getAddedLines(oldContent, content);
   if (addedLines.length === 0) return null;
   const summary = summarizeChanges(addedLines);
-  console.log(`[AUDIT] Relationship updated: ${userId}`);
+  log("AUDIT", `Relationship updated: ${userId}`);
   return `[Audit] Updated <@${userId}>: ${summary}`;
 }
 
@@ -221,7 +222,7 @@ async function handleImpressionChange({ filename, content, oldContent }: ChangeP
       const impression = JSON.parse(line);
       const what = impression.what || "unknown";
       const truncated = what.length > 150 ? what.substring(0, 147) + "..." : what;
-      console.log(`[AUDIT] New impression for ${userId}: ${what.substring(0, 50)}...`);
+      log("AUDIT", `New impression for ${userId}: ${what.substring(0, 50)}...`);
       messages.push(`[Audit] Impression of <@${userId}>: ${truncated}`);
     } catch {
       // Invalid JSON line, skip
@@ -256,7 +257,7 @@ async function watchLearnedPatterns(
     patternsContent.set(LEARNED_PATTERNS_FILE, "");
   }
 
-  console.log(`[AUDIT] Watching learned patterns: ${LEARNED_PATTERNS_FILE}`);
+  log("AUDIT", `Watching learned patterns: ${LEARNED_PATTERNS_FILE}`);
 
   patternsWatcher = watch(AGENT_DATA_DIR, async (_event, filename) => {
     if (filename !== "learned-patterns.md") {
@@ -299,10 +300,10 @@ async function watchLearnedPatterns(
       const summary = summarizeChanges(addedLines);
       const message = `[Audit] Patterns updated: ${summary}`;
 
-      console.log(`[AUDIT] Patterns updated:\n${summary}`);
+      log("AUDIT", `Patterns updated:\n${summary}`);
       await dmCreator(client, creatorId, message);
     } catch (err) {
-      console.error(`[AUDIT] Error processing patterns update:`, err);
+      error("AUDIT", "Error processing patterns update", err);
     }
   });
 }
@@ -318,7 +319,7 @@ export async function startAuditWatcher(
   client: Client,
   creatorId: UserId
 ): Promise<void> {
-  console.log(`[AUDIT] Starting audit watcher system...`);
+  log("AUDIT", "Starting audit watcher system...");
 
   await Promise.all([
     createFileWatcher(client, creatorId, {
@@ -360,14 +361,14 @@ export async function startAuditWatcher(
     watchLearnedPatterns(client, creatorId),
   ]);
 
-  console.log(`[AUDIT] Audit watcher system started`);
+  log("AUDIT", "Audit watcher system started");
 }
 
 /**
  * Stop all audit watchers
  */
 export function stopAuditWatcher(): void {
-  console.log(`[AUDIT] Stopping audit watcher system...`);
+  log("AUDIT", "Stopping audit watcher system...");
 
   // Close factory-managed watchers
   closeAllWatchers();
@@ -380,5 +381,5 @@ export function stopAuditWatcher(): void {
   patternsContent.clear();
   patternsRecentlyProcessed.clear();
 
-  console.log(`[AUDIT] Audit watcher system stopped`);
+  log("AUDIT", "Audit watcher system stopped");
 }

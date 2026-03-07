@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { AGENT_DATA_DIR } from "./paths";
 import { getEffectiveConfig } from "./config/runtime-config";
+import { warn } from "./log";
 
 // ============================================================================
 // Response Triggers (loaded from disk - Greg can edit these!)
@@ -59,7 +60,7 @@ export async function loadResponseTriggers(): Promise<string[]> {
     } catch (error: unknown) {
       // ENOENT is expected (file is optional) — only warn on other errors
       if (error && typeof error === "object" && "code" in error && error.code !== "ENOENT") {
-        console.warn(`[TRIGGERS] Failed to load response triggers, using defaults:`, error);
+        warn("TRIGGERS", "Failed to load response triggers, using defaults", error);
       }
       baseKeywords = getDefaultKeywords();
     }
@@ -71,7 +72,7 @@ export async function loadResponseTriggers(): Promise<string[]> {
     const effectiveConfig = await getEffectiveConfig();
     gregKeywords = effectiveConfig.config.keywords || [];
   } catch (error) {
-    console.warn(`[TRIGGERS] Failed to load Greg's keywords from config:`, error);
+    warn("TRIGGERS", "Failed to load Greg's keywords from config", error);
   }
 
   // Combine all keywords
@@ -90,7 +91,7 @@ export async function loadResponseTriggers(): Promise<string[]> {
 
     // Validate against allowlist (double-check, also done in runtime-config)
     if (!isValidKeyword(normalized)) {
-      console.warn(`[TRIGGERS] Skipping invalid keyword: "${keyword}"`);
+      warn("TRIGGERS", `Skipping invalid keyword: "${keyword}"`);
       continue;
     }
 

@@ -3,7 +3,7 @@ import { handleReady, handleMessage, handleTypingStart, handleReaction, Config }
 import { startIdleLoop, stopIdleLoop, IdleConfig } from "./idle";
 import { startAuditWatcher, stopAuditWatcher } from "./audit";
 import { initTypingTracker } from "./typing";
-import { log } from "./log";
+import { log, error } from "./log";
 import { createToolsServer } from "./custom-tools";
 import { setToolsServer } from "./agent";
 import { initTranscriptIndex, closeTranscriptIndex, setDmChannelId } from "./transcript-index";
@@ -63,17 +63,17 @@ const CREATOR_USER_ID = process.env.CREATOR_USER_ID;
 const CHANNEL_IDS = process.env.CHANNEL_IDS || process.env.GROUP_DM_CHANNEL_ID;
 
 if (!DISCORD_TOKEN) {
-  console.error("❌ Error: DISCORD_TOKEN environment variable is required");
+  error("STARTUP", "DISCORD_TOKEN environment variable is required");
   process.exit(1);
 }
 
 if (!CREATOR_USER_ID) {
-  console.error("❌ Error: CREATOR_USER_ID environment variable is required");
+  error("STARTUP", "CREATOR_USER_ID environment variable is required");
   process.exit(1);
 }
 
 if (!CHANNEL_IDS) {
-  console.error("❌ Error: CHANNEL_IDS environment variable is required (comma-separated channel IDs)");
+  error("STARTUP", "CHANNEL_IDS environment variable is required (comma-separated channel IDs)");
   process.exit(1);
 }
 
@@ -190,12 +190,12 @@ client.on("messageUpdate", (oldMessage, newMessage) => {
 });
 
 client.on("error", (err) => {
-  console.error(`[${new Date().toLocaleTimeString()}] [DISCORD] ❌ Client error:`, err);
+  error("DISCORD", "Client error", err);
 });
 
 // Handle unhandled promise rejections
-process.on("unhandledRejection", (reason, promise) => {
-  console.error(`[${new Date().toLocaleTimeString()}] [PROCESS] ❌ Unhandled rejection:`, reason);
+process.on("unhandledRejection", (reason) => {
+  error("PROCESS", "Unhandled rejection", reason);
 });
 
 // Graceful shutdown - set status to idle before quitting

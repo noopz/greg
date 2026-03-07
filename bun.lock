@@ -7,6 +7,7 @@
         "@anthropic-ai/claude-agent-sdk": "^0.2.29",
         "debug": "^4.4.3",
         "discord.js-selfbot-v13": "latest",
+        "picocolors": "^1.1.1",
         "sharp": "^0.34.5",
         "zod": "^4.3.6",
       },

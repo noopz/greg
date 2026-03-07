@@ -144,8 +144,35 @@ export class StreamingSession {
   // Stall detection: timestamp of last SDK message received by consumeOutput
   private lastMessageAt = 0;
 
+  // Session-level mutex (promise-chaining pattern)
+  private _lock: Promise<void> = Promise.resolve();
+  private _unlock: (() => void) | null = null;
+
   constructor(label: string) {
     this.label = label;
+  }
+
+  // ==========================================================================
+  // Mutex
+  // ==========================================================================
+
+  /** Acquire exclusive access. Caller MUST call release(). */
+  async acquire(): Promise<void> {
+    let release!: () => void;
+    const next = new Promise<void>(r => { release = r; });
+    const prev = this._lock;
+    this._lock = next;       // Chain: future callers await THIS promise
+    await prev;              // Wait for previous holder to release
+    this._unlock = release;  // Store our release function
+  }
+
+  /** Release exclusive access. */
+  release(): void {
+    if (this._unlock) {
+      const unlock = this._unlock;
+      this._unlock = null;
+      unlock();
+    }
   }
 
   // ==========================================================================
@@ -168,6 +195,7 @@ export class StreamingSession {
     this.currentToolNames.clear();
     this.currentToolInputs = [];
     this.currentTypingCallback = null;
+    this.lastMessageAt = 0;
 
     log("STREAM", `[${this.label}] Starting streaming session...`);
 
@@ -249,9 +277,7 @@ export class StreamingSession {
     this.currentToolInputs = [];
     this.lastCallInputTokens = 0;
 
-    const messageContent = typeof content === "string"
-      ? content
-      : content;
+    const messageContent = content;
 
     // Use empty string for session_id before init — SDK bootstraps the session
     const sessionIdValue = this._sessionId ?? "";

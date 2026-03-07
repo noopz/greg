@@ -11,6 +11,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { dmCreator } from "./bot-types";
 import type { UserId } from "./agent-types";
+import { log, error } from "./log";
 
 // ============================================================================
 // Types
@@ -114,7 +115,7 @@ export async function createFileWatcher(
     }
   }
 
-  console.log(`[AUDIT] Watching ${config.entityName} directory: ${config.directory}`);
+  log("AUDIT", `Watching ${config.entityName} directory: ${config.directory}`);
 
   const watcher = watch(
     config.directory,
@@ -160,7 +161,7 @@ export async function createFileWatcher(
           await dmCreator(client, creatorId, message);
         }
       } catch (err) {
-        console.error(`[AUDIT] Error processing ${config.entityName} file ${filename}:`, err);
+        error("AUDIT", `Error processing ${config.entityName} file ${filename}`, err);
       }
     }
   );
