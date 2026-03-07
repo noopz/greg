@@ -60,11 +60,13 @@ type BufferAction = (
 // Configuration
 // ============================================================================
 
+// Queue dedup: if the same user sends multiple messages before their turn
+// starts, merge them into one turn to avoid the agent responding to each line separately.
 const SAME_USER_DEBOUNCE_MS = 3_000;
 const DEFAULT_DEBOUNCE_MS = 500;
 const MAX_MERGED_MESSAGES = 5;
 const MAX_MERGED_CONTENT_LENGTH = 2000;
-const STALE_QUEUE_THRESHOLD_MS = 5 * 60 * 1000;
+const STALE_QUEUE_THRESHOLD_MS = 5 * 60 * 1000; // Drop queued turns older than 5min
 const CANCEL_TTL_MS = 5 * 60 * 1000;
 const RETRY_DELAY_MS = 2_000;
 

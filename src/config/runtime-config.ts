@@ -372,20 +372,6 @@ export function clampToBounds(config: RuntimeConfig): {
 export async function loadConfig(): Promise<LoadConfigResult> {
   return withLock(async () => {
     try {
-      // Migrate from old greg-config.json if new file doesn't exist
-      const oldConfigFile = path.join(AGENT_DATA_DIR, "greg-config.json");
-      try {
-        await fs.stat(CONFIG_FILE);
-      } catch {
-        try {
-          await fs.stat(oldConfigFile);
-          await fs.rename(oldConfigFile, CONFIG_FILE);
-          log(TAG, "Migrated greg-config.json → runtime-config.json");
-        } catch {
-          // Neither file exists, will use defaults below
-        }
-      }
-
       // Check if file exists
       let stat;
       try {

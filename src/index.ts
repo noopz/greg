@@ -14,6 +14,12 @@ import { cancelMessage, cancelQueuedMessage } from "./turn-queue";
 import { getStreamingSession } from "./agent";
 import { getCurrentlyProcessingMessageId, interruptCurrentMessage } from "./bot";
 
+// Execution paths:
+//   Main: bot.ts (Discord events) → turn-queue.ts (ordering/dedup) →
+//     turn-executor.ts (Agent SDK streaming) → context-loader.ts (prompt assembly)
+//   Buffer: haiku-router.ts (classify parallel messages) → fork or re-queue
+//   Idle: idle-selector.ts (pick channel) → idle-executor.ts (unprompted turn)
+
 // Parse command line arguments
 const { values: args } = parseArgs({
   args: process.argv.slice(2),

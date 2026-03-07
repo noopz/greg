@@ -8,6 +8,9 @@
  * Replaces per-turn query() calls with a single persistent session
  * that accepts messages via yieldMessage() and returns responses
  * via waitForResponse().
+ *
+ * Lifecycle: create → start() → [yield → waitForResponse → yield]* → close()
+ * Concurrency: acquire()/release() mutex ensures one turn at a time.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";

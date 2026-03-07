@@ -96,7 +96,10 @@ export async function executeTurn(
 
   // ========================================================================
   // MAIN MODE: Persistent streaming session
+  // Phases: 1) Session setup → 2) Build tools + context → 3) Streaming
+  //   ReAct loop (yield → wait → review → continue) → 4) Post-turn teardown
   // ========================================================================
+
   const msgId = options.originalMessageId ?? "unknown";
   const turnUserId = options.userId ?? "unknown";
 
@@ -140,7 +143,6 @@ export async function executeTurn(
     prompt += `\n\n**[Cold start]** You've just been restarted — you have NO session memory beyond the recent messages above. Before attributing statements to people or engaging deeply with an ongoing topic, use search_transcripts to verify context you're unsure about. Don't guess who said what.`;
   }
 
-  // Build SDK options
   const persona = await loadPersona();
   const toolsServer = getToolsServer();
   const allowedTools = buildAllowedTools(options.isCreator, !!toolsServer);
@@ -153,7 +155,7 @@ export async function executeTurn(
   }
 
   // ========================================================================
-  // Streaming Session Execution
+  // Phase 3: Streaming ReAct loop (yield → wait → review → continue)
   // ========================================================================
 
   // Ensure session is alive, (re)start if needed
@@ -250,7 +252,6 @@ export async function executeTurn(
       }
     }
 
-    // Post-turn session teardown checks
     try {
       if (getShouldStartFreshSession()) {
         log("SDK", "[STREAMING] Memory flush requested fresh session — will restart");
@@ -262,6 +263,8 @@ export async function executeTurn(
       } else if (activeSessionId) {
         const sessionData = await loadSessionData();
         const currentTokens = sessionData?.totalTokens ?? 0;
+        // ~150k tokens ≈ 75% of the 200k context window. Beyond this,
+        // prompt assembly competes with conversation history for space.
         if (currentTokens >= 150000) {
           log("SDK", `[STREAMING] Token threshold reached (${currentTokens}) — will restart session`);
           session.close();
@@ -319,6 +322,8 @@ export async function executeTurn(
           missed = [];
         }
 
+        // Cap at 2 iterations: one to fix the issue, one to verify the fix.
+        // More iterations risk loops where the reviewer and agent disagree.
         const MAX_REACT_ITERATIONS = 2;
         let reactIteration = 0;
         let currentMissed = missed;

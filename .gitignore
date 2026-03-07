@@ -18,7 +18,7 @@ agent-data/compaction-summaries/
 agent-data/meme-archive/
 agent-data/game-updates/
 agent-data/idle-state.json
-agent-data/greg-config.json
+agent-data/runtime-config.json
 
 # Keep the template files but not the content
 !agent-data/learned-patterns.md
@@ -49,7 +49,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
-agent-data/greg-config-effective.json
 agent-data/runtime-config-effective.json
 agent-data/config-baseline.json
 agent-data/reaction-feedback.jsonl

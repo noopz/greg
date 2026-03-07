@@ -120,6 +120,10 @@ export function stripReasoningTags(text: string): string {
           thinkStart = -1;
           continue;
         }
+      } else {
+        // Orphan closing tag at depth 0 — strip it
+        result = result.slice(0, i) + result.slice(i + closeMatch[0].length);
+        continue; // Re-check at same position
       }
       i += closeMatch[0].length;
       continue;

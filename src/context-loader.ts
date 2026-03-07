@@ -189,6 +189,9 @@ function updateImpressionSnapshot(dirtyUserIds: string[]): void {
 // Hypothesis Injection (probabilistic per compaction window)
 // ============================================================================
 
+// "Hypotheses" are the agent's beliefs about users (stored in agent-data/hypotheses/).
+// We inject a review prompt ~once per 3 session compactions (~420k tokens) so the
+// agent periodically re-examines and prunes stale beliefs without it dominating turns.
 const HYPOTHESIS_REVIEW_PROBABILITY = 1 / 3;
 let _hypothesisReviewPending = false;
 

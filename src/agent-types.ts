@@ -93,7 +93,7 @@ export interface AgentContext {
   userId?: UserId;
   /** Whether this is a follow-up in an active conversation */
   isFollowUp?: boolean;
-  /** Image content blocks (Phase 5: populated when ENABLE_IMAGES=1) */
+  /** Image content blocks (enabled by default, DISABLE_IMAGES=1 to opt out) */
   imageBlocks?: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }>;
 }
 
@@ -242,6 +242,22 @@ export function sanitizeResponse(response: string): string {
     const reduction = response.length - sanitized.length;
     if (reduction > 0) {
       log("SDK", `Stripped reasoning tags: ${response.length} -> ${sanitized.length} chars (-${reduction})`);
+    }
+  }
+
+  // Deduplicate consecutive identical paragraphs (SDK can deliver duplicate text blocks)
+  const rawParagraphs = sanitized.split(/\n\n+/);
+  if (rawParagraphs.length > 1) {
+    const deduped: string[] = [rawParagraphs[0]];
+    for (let i = 1; i < rawParagraphs.length; i++) {
+      if (rawParagraphs[i] !== rawParagraphs[i - 1]) {
+        deduped.push(rawParagraphs[i]);
+      } else {
+        log("SDK", `Removed duplicate paragraph: "${rawParagraphs[i].substring(0, 60)}..."`);
+      }
+    }
+    if (deduped.length < rawParagraphs.length) {
+      sanitized = deduped.join("\n\n");
     }
   }
 

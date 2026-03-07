@@ -4,7 +4,7 @@ import { wrapExternalContent } from "./security";
 import { log, warn } from "./log";
 import { BOT_NAME } from "./config/identity";
 
-const IMAGES_ENABLED = process.env.ENABLE_IMAGES === "1";
+const IMAGES_ENABLED = process.env.DISABLE_IMAGES !== "1";
 
 // Max image size to download (5MB)
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -210,7 +210,7 @@ ${formattedMessagesStr}
 }
 
 // ============================================================================
-// Phase 5: Image Attachment Support (ENABLE_IMAGES=1)
+// Image Attachment Support (enabled by default, DISABLE_IMAGES=1 to opt out)
 // ============================================================================
 
 /** Content block types for SDKUserMessage.message.content */
@@ -300,7 +300,7 @@ async function downloadImageAsBase64(url: string): Promise<ContentBlock | null> 
 
 /**
  * Build content blocks for a Discord message, optionally including images.
- * When ENABLE_IMAGES=1, inline image attachments are included as base64 content blocks.
+ * When images are enabled (default), inline image attachments are included as base64 content blocks.
  * Returns an array of content blocks suitable for SDKUserMessage.message.content.
  */
 export async function buildMessageContentBlocks(

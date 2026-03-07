@@ -103,6 +103,8 @@ function buildContextRefreshCallback(
 
       const newMessageCount = newMessages.length;
 
+      // If >2 new messages arrived while we were generating, the conversation
+      // may have moved on. With >4 and no mention, skip the response entirely.
       if (newMessageCount > 2 && !mustRespond) {
         log(
           "CONTEXT_REFRESH",
@@ -147,9 +149,9 @@ async function validateChannel(
   registerUser(msgUserId, message.author.username);
 
   // Drop image-only messages (no text content, just attachments/embeds).
-  // When ENABLE_IMAGES=1, image-only messages from the creator are allowed through.
+  // Image-only messages from the creator are allowed through (unless DISABLE_IMAGES=1).
   // Non-creator image-only messages are always dropped (creator can reply to them to trigger image processing).
-  const IMAGES_ENABLED = process.env.ENABLE_IMAGES === "1";
+  const IMAGES_ENABLED = process.env.DISABLE_IMAGES !== "1";
   const isCreatorMsg = msgUserId === config.creatorId;
   if (!message.content.trim() && (message.attachments.size > 0 || message.embeds.length > 0)) {
     if (!IMAGES_ENABLED || !isCreatorMsg) {
@@ -158,7 +160,7 @@ async function validateChannel(
     }
   }
 
-  // Kill switch - only creator can trigger with "order 86"
+  // Kill switch — creator sends "order 86" to shut down the bot ("order 86 -quiet" skips the goodbye).
   const lowerMsg = message.content.toLowerCase().trim();
   if (
     msgUserId === config.creatorId &&
@@ -282,7 +284,7 @@ async function executePipeline(
   const discordContext = await formatDiscordContext(message, client, config.creatorId);
   log("PIPELINE", `msg=${message.id} context built (${discordContext.length} chars)`);
 
-  // Phase 5: Build image content blocks when ENABLE_IMAGES=1
+  // Build image content blocks (enabled by default, DISABLE_IMAGES=1 to opt out).
   // Only the creator can trigger image processing — either by sending images directly,
   // or by replying to a non-creator's message that contains images.
   const isCreator = msgUserId === config.creatorId;
@@ -293,8 +295,7 @@ async function executePipeline(
     imageBlocks = contentBlocks
       .filter((b): b is Extract<typeof b, { type: "image" }> => b.type === "image");
 
-    // If creator's message has no images but they're replying to a message, extract
-    // images from the referenced message (e.g., creator replies "greg look at this")
+    // Reply-to-extract: pull images from the referenced message when the creator's own message has none.
     if (imageBlocks.length === 0 && message.reference?.messageId) {
       try {
         const refMsg = await message.channel.messages.fetch(message.reference.messageId);

@@ -45,6 +45,10 @@ interface ChannelBuffer {
 
 const channelBuffers = new Map<string, ChannelBuffer>();
 
+// Buffer timing: when the main queue is busy processing a turn, new messages
+// from *other* users accumulate here. We debounce (2.5s) to batch rapid-fire
+// messages, then classify the batch to decide which belong to the current
+// conversation (re-queue) vs. which are independent topics (fork).
 const BUFFER_DEBOUNCE_MS = 2500;      // Wait for more messages after each arrival
 const BUFFER_MAX_WAIT_MS = 8000;      // Hard cap - classify after 8s max
 const BUFFER_MAX_MESSAGES = 8;        // Hard cap on buffered messages
