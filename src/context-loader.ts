@@ -7,7 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { AGENT_DATA_DIR, MEMORIES_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR, AGENTS_DIR, localDate } from "./paths";
+import { AGENT_DATA_DIR, MEMORIES_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR, AGENTS_DIR, SKILLS_DIR, LOCAL_SKILLS_DIR, localDate } from "./paths";
 import {
   loadFileWithCache,
   getFileMtime,
@@ -343,6 +343,73 @@ async function discoverAgents(): Promise<string> {
 }
 
 /**
+ * Discover skills from .claude/skills/ and local/skills/ by parsing SKILL.md files.
+ * Categorizes into chat-usable (has "## When to Use") and idle-only skills.
+ */
+async function discoverSkills(): Promise<string> {
+  const chatSkills: string[] = [];
+  const idleSkills: string[] = [];
+
+  for (const dir of [SKILLS_DIR, LOCAL_SKILLS_DIR]) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const skillPath = path.join(dir, entry.name, "SKILL.md");
+      let content: string;
+      try {
+        content = await fs.readFile(skillPath, "utf-8");
+      } catch {
+        continue;
+      }
+
+      // Parse frontmatter
+      const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
+      const name = frontmatter?.[1].match(/^name:\s*(.+)$/m)?.[1]?.trim() ?? entry.name;
+      const description = frontmatter?.[1].match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? "";
+
+      // Strip code blocks for section detection (same approach as skill-loader)
+      const stripped = content.replace(/```[\s\S]*?```/g, (m) => " ".repeat(m.length));
+
+      // Detect chat-usable vs idle-only
+      const whenToUseMatch = stripped.match(/## When to Use\s*\n([\s\S]*?)(?=\n## |\n# |$)/i);
+
+      if (whenToUseMatch) {
+        const whenToUse = whenToUseMatch[1].trim().slice(0, 200);
+        const toolsMatch = content.match(/^## Allowed Tools\s*\n(.+)$/m);
+        const tools = toolsMatch?.[1]?.trim() ?? "";
+        chatSkills.push(`- **${name}**: ${description}. Use when: ${whenToUse}${tools ? `. Tools: ${tools}` : ""}`);
+      } else {
+        // Idle-only: extract cooldown
+        const cooldownMatch = content.match(/Cooldown:\s*(\d+)\s*(hours?|hrs?|minutes?|mins?)/i);
+        let cooldownStr = "";
+        if (cooldownMatch) {
+          const val = parseInt(cooldownMatch[1], 10);
+          const unit = cooldownMatch[2].toLowerCase();
+          cooldownStr = unit.startsWith("h") ? `${val}h` : `${val}m`;
+        }
+        idleSkills.push(cooldownStr ? `${name} (${cooldownStr})` : name);
+      }
+    }
+  }
+
+  const lines: string[] = [];
+  if (chatSkills.length > 0) {
+    lines.push(`Chat skills (read the full SKILL.md before using):\n${chatSkills.join("\n")}`);
+  }
+  if (idleSkills.length > 0) {
+    lines.push(`Automatic idle skills (these run on their own, don't trigger manually):\n- ${idleSkills.join(", ")}`);
+  }
+  return lines.length > 0 ? lines.join("\n\n") + "\n" : "No skills discovered.\n";
+}
+
+/**
  * Build dynamic context by hot-reloading all context files from disk.
  * Uses session mtime snapshot to skip unchanged sections and send deltas.
  *
@@ -526,6 +593,9 @@ Then use it: "Use the game-researcher agent to find Arc Raiders patch notes"
 ## YOUR CUSTOM AGENTS
 ${await discoverAgents()}
 Prefer these over general-purpose for matching tasks - they're faster and cheaper.
+
+## YOUR SKILLS
+${await discoverSkills()}
 
 ## CREATING NEW AGENTS
 If you notice recurring task patterns, create a new agent:

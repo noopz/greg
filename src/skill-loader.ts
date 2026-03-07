@@ -41,7 +41,7 @@ const BUILTIN_BEHAVIORS: IdleBehavior[] = [];
  */
 export function parseCooldown(content: string): number | undefined {
   // Look for "Cooldown: X unit" pattern in the idle behavior section
-  const cooldownMatch = content.match(/Cooldown:\s*(\d+)\s*(hour|hr|hours|hrs|minute|min|minutes|mins)/i);
+  const cooldownMatch = content.match(/Cooldown:\s*(\d+)\s*(hours|hour|hrs|hr|minutes|minute|mins|min)/i);
 
   if (!cooldownMatch) {
     return undefined;
@@ -94,17 +94,20 @@ export function formatCooldown(ms: number): string {
  * ```
  */
 export function parseIdleBehaviorFromSkill(content: string, skillName: string, skillPath: string): IdleBehavior | null {
-  // Strip fenced code blocks before parsing to avoid matching headers inside examples
-  const contentWithoutCodeBlocks = content.replace(/```[\s\S]*?```/g, "");
+  // Strip fenced code blocks to avoid matching headers inside examples,
+  // but only for finding section boundaries — extract content from the original
+  const contentWithoutCodeBlocks = content.replace(/```[\s\S]*?```/g, (match) => " ".repeat(match.length));
 
-  // Look for ## Idle Behavior section
+  // Look for ## Idle Behavior section in stripped content (for boundary detection)
   const idleBehaviorMatch = contentWithoutCodeBlocks.match(/## Idle Behavior\s*\n([\s\S]*?)(?=\n## |\n# |$)/i);
 
   if (!idleBehaviorMatch) {
     return null;
   }
 
-  const sectionContent = idleBehaviorMatch[1].trim();
+  // Use the match position to extract from original content (preserving code blocks)
+  const sectionStart = idleBehaviorMatch.index! + idleBehaviorMatch[0].length - idleBehaviorMatch[1].length;
+  const sectionContent = content.substring(sectionStart, sectionStart + idleBehaviorMatch[1].length).trim();
   if (!sectionContent) {
     return null;
   }
@@ -113,7 +116,7 @@ export function parseIdleBehaviorFromSkill(content: string, skillName: string, s
   const cooldownMs = parseCooldown(sectionContent);
 
   // Remove the cooldown line from the prompt (if present)
-  const prompt = sectionContent.replace(/Cooldown:\s*\d+\s*(?:hour|hr|hours|hrs|minute|min|minutes|mins)\s*\n*/gi, "").trim();
+  const prompt = sectionContent.replace(/Cooldown:\s*\d+\s*(?:hours|hour|hrs|hr|minutes|minute|mins|min)\s*\n*/gi, "").trim();
 
   if (!prompt) {
     return null;
