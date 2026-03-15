@@ -13,6 +13,7 @@ import type { AgentContext, TurnResult, ContextRefreshCallback } from "./agent-t
 import { extractMessageContent } from "./agent-types";
 import { getTurnQueue, enqueueMessage } from "./turn-queue";
 import { executeTurn } from "./turn-executor";
+import { CLASSIFIER_SYSTEM_PROMPT, buildClassifierPrompt, parseClassifierResponse } from "./gates/classifier";
 
 // ============================================================================
 // Session Forking Constants
@@ -162,40 +163,26 @@ export function bufferMessage(
 /**
  * Build the Haiku classifier prompt from buffered messages and current queue context.
  */
-function buildClassifierPrompt(
+function buildClassifierPromptFromBuffer(
   sessionKey: string,
   messages: BufferedMessage[]
 ): string {
   const queue = getTurnQueue(sessionKey);
 
-  // Build message list for Haiku
-  const messageList = messages.map((msg, i) => {
-    const content = extractMessageContent(msg.context);
-    return `[${i}] ${content}`;
-  }).join("\n");
+  const formattedMessages = messages.map((msg, i) => ({
+    index: i,
+    content: extractMessageContent(msg.context),
+  }));
 
-  // Get info about what the queue is currently processing
   const currentUserId = queue?.currentTurnUserId || "unknown";
-  const processingDuration = queue?.currentTurnStartedAt
+  const processingDurationSec = queue?.currentTurnStartedAt
     ? Math.floor((Date.now() - queue.currentTurnStartedAt) / 1000)
     : 0;
 
-  return `Messages buffered while Greg was responding (queue busy for ${processingDuration}s, responding to user ${currentUserId}):
-
-${messageList}
-
-Classify each message index into one of two categories:
-- "queue": Messages that should wait for the main queue. This includes:
-  - Follow-ups to the current conversation (agreements, reactions, "yes", "do it", "YEA", etc.)
-  - Messages on a different topic that are NOT time-sensitive and can wait
-  - Most messages belong here. Default to queue when uncertain.
-- "fork": Groups of message indices that are genuinely separate conversations AND need an immediate response. Only fork when:
-  - The message is a direct question or request to Greg about something completely unrelated
-  - Waiting would make the response feel stale or unresponsive
-  - NEVER fork agreement/reaction messages ("yes", "YEA", "do it", "lets go", etc.)
-
-Output JSON only, no explanation: {"queue": [0, 1], "fork": [[2]]}
-If all messages should queue: {"queue": [0, 1, 2], "fork": []}`;
+  return buildClassifierPrompt(
+    { currentTurnUserId: currentUserId, processingDurationSec },
+    formattedMessages
+  );
 }
 
 /**
@@ -214,7 +201,7 @@ async function classifyWithHaiku(
     return safeDefault;
   }
 
-  const classifierPrompt = buildClassifierPrompt(sessionKey, messages);
+  const classifierPrompt = buildClassifierPromptFromBuffer(sessionKey, messages);
 
   let responseText = "";
 
@@ -226,7 +213,7 @@ async function classifyWithHaiku(
         options: {
           cwd: PROJECT_DIR,
           model: "haiku",
-          systemPrompt: "You classify Discord messages into queue vs fork categories. Output only valid JSON.",
+          systemPrompt: CLASSIFIER_SYSTEM_PROMPT,
           allowedTools: [], // No tools needed
         },
       })) {
@@ -253,26 +240,7 @@ async function classifyWithHaiku(
 
   // Parse JSON response
   try {
-    // Extract JSON from response (Haiku might add some text around it)
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      warn("CLASSIFY", `No JSON found in classifier response: "${responseText.substring(0, 100)}"`);
-      return safeDefault;
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { queue?: number[]; fork?: number[][] };
-
-    // Validate structure
-    const queueIndices = Array.isArray(parsed.queue) ? parsed.queue.filter(i => typeof i === "number" && i >= 0 && i < messages.length) : [];
-    const forkGroups = Array.isArray(parsed.fork) ? parsed.fork.filter(g => Array.isArray(g)).map(g => g.filter(i => typeof i === "number" && i >= 0 && i < messages.length)).filter(g => g.length > 0) : [];
-
-    // Ensure every index is accounted for - unclassified go to queue
-    const classified = new Set([...queueIndices, ...forkGroups.flat()]);
-    for (const idx of allIndices) {
-      if (!classified.has(idx)) {
-        queueIndices.push(idx);
-      }
-    }
+    const { queue: queueIndices, fork: forkGroups } = parseClassifierResponse(responseText, messages.length);
 
     // Enforce max concurrent forks
     const state = forkState.get(sessionKey);

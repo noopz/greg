@@ -9,7 +9,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { IMPRESSIONS_DIR } from "./paths";
+import { IMPRESSIONS_DIR, safeFileId } from "./paths";
 import { log, warn, error } from "./log";
 
 // ============================================================================
@@ -41,6 +41,17 @@ const MAX_IMPRESSIONS_PER_USER = 10;
 /** Tag for logging */
 const LOG_TAG = "Impressions";
 
+const DECAY_HALF_LIFE_DAYS = 30;
+const DECAY_LAMBDA = Math.LN2 / DECAY_HALF_LIFE_DAYS;
+const DAY_MS = 86_400_000;
+
+function decayedScore(weight: number, whenIso: string, nowMs: number): number {
+  const whenMs = Date.parse(whenIso);
+  if (!Number.isFinite(whenMs)) return weight;
+  const ageDays = Math.max(0, (nowMs - whenMs) / DAY_MS);
+  return weight * Math.exp(-DECAY_LAMBDA * ageDays);
+}
+
 // ============================================================================
 // Mtime Cache
 // ============================================================================
@@ -62,7 +73,7 @@ const impressionsCache = new Map<string, CachedImpressions>();
  */
 function getImpressionsFilePath(userId: string): string {
   // Sanitize userId to prevent path traversal
-  const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const safeUserId = safeFileId(userId);
   return path.join(IMPRESSIONS_DIR, `${safeUserId}.jsonl`);
 }
 
@@ -159,13 +170,13 @@ export async function loadImpressions(userIds: string[]): Promise<string | null>
         continue;
       }
 
-      // Sort by weight (desc) then by recency (desc)
+      // Sort by temporally-decayed score (desc) then by recency (desc)
       // Copy before sorting to avoid mutating the cached array
+      const nowMs = Date.now();
       const sorted = [...impressions].sort((a, b) => {
-        if (b.weight !== a.weight) {
-          return b.weight - a.weight;
-        }
-        // Sort by when (ISO string comparison works for recency)
+        const scoreA = decayedScore(a.weight, a.when, nowMs);
+        const scoreB = decayedScore(b.weight, b.when, nowMs);
+        if (scoreB !== scoreA) return scoreB - scoreA;
         return b.when.localeCompare(a.when);
       });
 
@@ -178,7 +189,8 @@ export async function loadImpressions(userIds: string[]): Promise<string | null>
         const truncatedWhat = imp.what.length > 150
           ? imp.what.substring(0, 147) + "..."
           : imp.what;
-        return `- ${truncatedWhat} (weight: ${imp.weight})`;
+        const effective = decayedScore(imp.weight, imp.when, nowMs);
+        return `- ${truncatedWhat} (weight: ${effective.toFixed(1)})`;
       });
 
       sections.push(`### ${userId}\n${bullets.join("\n")}`);

@@ -26,6 +26,33 @@ type TranscriptEntry = {
   metadata?: Record<string, unknown>;
 };
 
+const FTS_STOP_WORDS = new Set([
+  // Articles & determiners
+  "a", "an", "the", "this", "that", "these", "those",
+  // Pronouns
+  "i", "me", "my", "we", "our", "you", "your", "he", "she", "it", "they", "them",
+  // Common verbs
+  "is", "are", "was", "were", "be", "been", "being",
+  "have", "has", "had", "do", "does", "did",
+  "will", "would", "could", "should", "can", "may", "might",
+  // Prepositions
+  "in", "on", "at", "to", "for", "of", "with", "by", "from", "about",
+  "into", "through", "during", "before", "after", "above", "below", "between", "under", "over",
+  // Conjunctions & question words
+  "and", "or", "but", "if", "then", "because", "as", "while",
+  "when", "where", "what", "which", "who", "how", "why",
+  // Vague references
+  "thing", "things", "stuff", "something", "anything", "everything", "nothing",
+  // Misc
+  "just", "now", "so", "not", "no", "up", "out",
+  // Discord filler & slang
+  "lol", "lmao", "lmfao", "rofl", "bruh", "bro", "dude", "like", "literally",
+  "tbh", "imo", "ngl", "idk", "smh", "omg", "wtf", "wth", "fr",
+  // Greetings & acknowledgments
+  "hey", "hi", "hello", "yo", "sup",
+  "ok", "okay", "sure", "right", "yep", "yea", "yeah", "nah", "cool", "nice",
+]);
+
 // ============================================================================
 // Module State
 // ============================================================================
@@ -338,7 +365,10 @@ export function searchTranscripts(
   try {
     // Try the raw query first (Greg can write FTS5 syntax directly).
     // Fall back to OR-tokenized query if FTS5 rejects it.
-    const fallbackQuery = query.split(/\s+/).filter(Boolean)
+    const tokens = query.split(/\s+/).filter(Boolean);
+    const filtered = tokens.filter((t) => !FTS_STOP_WORDS.has(t.toLowerCase()));
+    const effective = filtered.length > 0 ? filtered : tokens;
+    const fallbackQuery = effective
       .map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 
     let sql: string;

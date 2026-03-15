@@ -95,6 +95,8 @@ export interface AgentContext {
   isFollowUp?: boolean;
   /** Image content blocks (enabled by default, DISABLE_IMAGES=1 to opt out) */
   imageBlocks?: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }>;
+  /** Active participant user IDs (from active-participants tracking) */
+  activeUserIds?: UserId[];
 }
 
 /** Callback to check for new messages before sending response */
@@ -263,19 +265,17 @@ export function sanitizeResponse(response: string): string {
 
   // Filter paragraphs that look like leaked internal reasoning
   const paragraphs = sanitized.split(/\n\n+/);
-  if (paragraphs.length > 1) {
-    const filtered = paragraphs.filter(p => {
-      for (const pattern of LEAKED_REASONING_PATTERNS) {
-        if (pattern.test(p)) {
-          log("SDK", `Filtered leaked reasoning (matched ${pattern.source}): "${p.substring(0, 60)}..."`);
-          return false;
-        }
+  const filtered = paragraphs.filter(p => {
+    for (const pattern of LEAKED_REASONING_PATTERNS) {
+      if (pattern.test(p)) {
+        log("SDK", `Filtered leaked reasoning (matched ${pattern.source}): "${p.substring(0, 60)}..."`);
+        return false;
       }
-      return true;
-    });
-    if (filtered.length < paragraphs.length) {
-      sanitized = filtered.join("\n\n");
     }
+    return true;
+  });
+  if (filtered.length < paragraphs.length) {
+    sanitized = filtered.join("\n\n");
   }
 
   return sanitized.trim();

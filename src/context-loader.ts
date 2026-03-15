@@ -7,7 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { AGENT_DATA_DIR, MEMORIES_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR, AGENTS_DIR, SKILLS_DIR, LOCAL_SKILLS_DIR, localDate } from "./paths";
+import { AGENT_DATA_DIR, MEMORIES_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR, AGENTS_DIR, SKILLS_DIR, LOCAL_SKILLS_DIR, localDate, safeFileId } from "./paths";
 import {
   loadFileWithCache,
   getFileMtime,
@@ -50,7 +50,7 @@ export function snapshotSessionMtimes(userIds: string[]): void {
     const relResult = loadFileWithCache(relPath, MAX_RELATIONSHIP_CHARS);
     relMap.set(uid, { mtime: getFileMtime(relPath), content: relResult.content });
 
-    const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeUid = safeFileId(uid);
     impMap.set(uid, getFileMtime(path.join(IMPRESSIONS_DIR, `${safeUid}.jsonl`)));
   }
 
@@ -96,6 +96,22 @@ export function hasSessionSnapshot(): boolean {
 }
 
 /**
+ * Add new users to the existing snapshot so subsequent turns treat them as clean.
+ * Called after their data is loaded on a continuation turn.
+ */
+export function addUsersToSnapshot(newUserIds: string[]): void {
+  if (!sessionSnapshot) return;
+  for (const uid of newUserIds) {
+    if (sessionSnapshot.relationships.has(uid)) continue;
+    const relPath = path.join(RELATIONSHIPS_DIR, `${uid}.md`);
+    const relResult = loadFileWithCache(relPath, MAX_RELATIONSHIP_CHARS);
+    sessionSnapshot.relationships.set(uid, { mtime: getFileMtime(relPath), content: relResult.content });
+    const safeUid = safeFileId(uid);
+    sessionSnapshot.impressions.set(uid, getFileMtime(path.join(IMPRESSIONS_DIR, `${safeUid}.jsonl`)));
+  }
+}
+
+/**
  * Reset the session snapshot. Called when the session ID is cleared
  * so the next turn captures fresh mtimes.
  */
@@ -124,7 +140,7 @@ function getDirtyImpUserIds(userIds: string[]): string[] {
   return userIds.filter(uid => {
     const snapped = sessionSnapshot!.impressions.get(uid);
     if (snapped === undefined) return true;
-    const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeUid = safeFileId(uid);
     return getFileMtime(path.join(IMPRESSIONS_DIR, `${safeUid}.jsonl`)) !== snapped;
   });
 }
@@ -180,7 +196,7 @@ function loadRelationshipDeltas(dirtyUserIds: string[], updateSnapshot: boolean)
 function updateImpressionSnapshot(dirtyUserIds: string[]): void {
   if (!sessionSnapshot) return;
   for (const uid of dirtyUserIds) {
-    const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeUid = safeFileId(uid);
     sessionSnapshot.impressions.set(uid, getFileMtime(path.join(IMPRESSIONS_DIR, `${safeUid}.jsonl`)));
   }
 }
@@ -478,6 +494,15 @@ export async function buildDynamicContext(
     }
     if (updateSnapshot) updateImpressionSnapshot(dirtyImpUserIds);
     log("CONTEXT", `Impression updates: ${dirtyImpUserIds.length}/${userIds.length} users`);
+  }
+
+  // Add new users to the snapshot so subsequent turns treat them as clean
+  if (updateSnapshot && sessionSnapshot) {
+    const newUserIds = userIds.filter(uid => !sessionSnapshot!.relationships.has(uid));
+    if (newUserIds.length > 0) {
+      addUsersToSnapshot(newUserIds);
+      log("CONTEXT", `Added ${newUserIds.length} new users to snapshot`);
+    }
   }
 
   if (patternsClean) log("CONTEXT", "Skipping learned-patterns (unchanged)");

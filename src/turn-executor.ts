@@ -64,6 +64,14 @@ import {
   type ResponseBoundary,
 } from "./streaming-session";
 
+/** Resolve user IDs from active participants or fallback to regex extraction. */
+function resolveUserIds(discordContext: string, options: AgentContext): string[] {
+  if (options.activeUserIds?.length) {
+    return options.activeUserIds.map(String);
+  }
+  return extractUserIds(discordContext);
+}
+
 // ============================================================================
 // Turn Configuration
 // ============================================================================
@@ -105,8 +113,8 @@ export async function executeTurn(
 
   log("SDK", `executeTurn mode=main msg=${msgId} user=${resolveUser(turnUserId)} ch=${options.channelId} mustRespond=${options.mustRespond} isReply=${options.isReplyToBot ?? false} isFollowUp=${options.isFollowUp ?? false}`);
 
-  const userIds = extractUserIds(discordContext);
-  log("SDK", `Extracted ${userIds.length} user IDs: ${userIds.join(', ')}`);
+  const userIds = resolveUserIds(discordContext, options);
+  log("SDK", `${options.activeUserIds?.length ? "Active" : "Extracted"} ${userIds.length} user IDs: ${userIds.join(', ')}`);
 
   // Load session ID (for context building — streaming manages its own sessions)
   let sessionId = getCurrentSessionId();
@@ -483,7 +491,7 @@ async function executeForkTurn(
   }
 
   // Build context + prompt
-  const userIds = extractUserIds(discordContext);
+  const userIds = resolveUserIds(discordContext, options);
   const dynamicContext = await buildDynamicContext(discordContext, userIds, false, false);
   const prompt = buildDiscordResponsePrompt(dynamicContext, options);
 

@@ -38,8 +38,9 @@ const channelTypeMap: Record<string, string> = {
 export async function formatDiscordContext(
   message: Message,
   client: Client,
-  creatorId?: string
-): Promise<string> {
+  creatorId?: string,
+  lastSeenMessageId?: string | null
+): Promise<{ context: string; latestMessageId: string }> {
   const channel = message.channel;
   const botId = client.user?.id;
 
@@ -48,6 +49,27 @@ export async function formatDiscordContext(
   const sortedMessages = [...messages.values()].sort(
     (a, b) => a.createdTimestamp - b.createdTimestamp
   );
+
+  // Track the latest message ID for delta computation on next turn
+  const latestMessageId = sortedMessages.length > 0
+    ? sortedMessages[sortedMessages.length - 1].id
+    : message.id;
+
+  // For continuation turns, include only new messages since lastSeenMessageId.
+  // If the lastSeenId isn't found in the fetched 15, fall back to full context
+  // (handles long gaps where messages scrolled out, or deleted watermark).
+  let deltaMode = false;
+  let messagesToFormat = sortedMessages;
+  if (lastSeenMessageId) {
+    const lastSeenIdx = sortedMessages.findIndex(m => m.id === lastSeenMessageId);
+    if (lastSeenIdx !== -1) {
+      const newMessages = sortedMessages.slice(lastSeenIdx + 1);
+      if (newMessages.length > 0) {
+        messagesToFormat = newMessages;
+        deltaMode = true;
+      }
+    }
+  }
 
   // Format author labels as "username@id" for non-bot users so Greg can
   // map usernames to Discord IDs (needed for relationship file naming, etc.)
@@ -72,7 +94,7 @@ export async function formatDiscordContext(
   const formattedMessages: string[] = [];
   let lastAuthorId: string | null = null;
 
-  for (const msg of sortedMessages) {
+  for (const msg of messagesToFormat) {
     // Skip Greg's audit/system messages
     if (msg.author.id === botId && msg.content.startsWith("[Audit]")) {
       continue;
@@ -206,7 +228,11 @@ Created At: ${message.createdAt.toISOString()}`;
 ${formattedMessagesStr}
 `;
 
-  return context;
+  if (deltaMode) {
+    log("DISCORD", `Delta context: ${messagesToFormat.length} new messages (since ${lastSeenMessageId})`);
+  }
+
+  return { context, latestMessageId };
 }
 
 // ============================================================================

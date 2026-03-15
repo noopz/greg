@@ -343,8 +343,8 @@ async function drainQueue(sessionKey: string): Promise<void> {
           continue;
         }
 
-        // Use the latest context (includes all previous messages from Discord)
-        turn.context = next.context;
+        // Concatenate context so no delta is lost (matches debounce path behavior)
+        turn.context += "\n" + next.context;
         turn.mergeCount += next.mergeCount;
 
         // Inherit response-forcing flags from any merged message

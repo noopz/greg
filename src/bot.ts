@@ -25,14 +25,24 @@ import { indexBotResponse, setDmChannelId } from "./transcript-index";
 import { BOT_NAME, BOT_NAME_LOWER } from "./config/identity";
 import { appendToTranscript, getTranscriptPath, appendJsonl, type TranscriptEntry } from "./persistence";
 import { TRANSCRIPTS_DIR, AGENT_DATA_DIR } from "./paths";
+import path from "node:path";
 
 import { consumeHypothesisReviewTrigger } from "./context-loader";
 import { executeFollowup, canScheduleFollowup } from "./followup-executor";
 import type { BotConfig } from "./bot-types";
+import {
+  trackParticipant,
+  registerKnownUser,
+  detectReferences,
+  getActiveParticipants,
+  loadAliases,
+} from "./active-participants";
 
 // Track the currently processing message for interrupt support (Phase 3)
 let currentlyProcessingMessageId: string | null = null;
-import path from "node:path";
+
+// Track last seen message ID per channel for discord context deltas
+const lastSeenMsgIds = new Map<ChannelId, string>();
 
 // Re-export shared types/utils from bot-types (leaf module) for backward compatibility
 export type { BotConfig, Config } from "./bot-types";
@@ -147,6 +157,20 @@ async function validateChannel(
 
   // Cache username for readable logs
   registerUser(msgUserId, message.author.username);
+
+  // Track active participants (runs for every incoming message)
+  trackParticipant(msgChannelId, msgUserId);
+  registerKnownUser(msgChannelId, message.author.username, msgUserId);
+
+  // One-time population of name pool for group DMs
+  if (message.channel.type === "GROUP_DM" && "recipients" in message.channel) {
+    for (const user of (message.channel as any).recipients) {
+      registerKnownUser(msgChannelId, user.username, userId(user.id));
+    }
+  }
+
+  detectReferences(msgChannelId, message.content);
+  loadAliases(); // Hot-reload aliases (checks mtime, no-op if unchanged)
 
   // Drop image-only messages (no text content, just attachments/embeds).
   // Image-only messages from the creator are allowed through (unless DISABLE_IMAGES=1).
@@ -281,13 +305,25 @@ async function executePipeline(
   if (!runSecurityCheck(message, validation.isCreatorDm)) return;
 
   log("PIPELINE", `msg=${message.id} building context...`);
-  const discordContext = await formatDiscordContext(message, client, config.creatorId);
-  log("PIPELINE", `msg=${message.id} context built (${discordContext.length} chars)`);
+  const isCreator = msgUserId === config.creatorId;
+
+  // Use delta context on continuation turns (session already has prior messages)
+  const session = getStreamingSession(isCreator);
+  const sessionAlive = session.isAlive();
+  if (!sessionAlive) {
+    // Session dead/restarting — clear watermark so fresh session gets full context
+    lastSeenMsgIds.delete(msgChannelId);
+  }
+  const lastSeenId = sessionAlive ? lastSeenMsgIds.get(msgChannelId) ?? null : null;
+  const { context: discordContext, latestMessageId } = await formatDiscordContext(
+    message, client, config.creatorId, lastSeenId
+  );
+  lastSeenMsgIds.set(msgChannelId, latestMessageId);
+  log("PIPELINE", `msg=${message.id} context built (${discordContext.length} chars${lastSeenId ? ", delta" : ""})`);
 
   // Build image content blocks (enabled by default, DISABLE_IMAGES=1 to opt out).
   // Only the creator can trigger image processing — either by sending images directly,
   // or by replying to a non-creator's message that contains images.
-  const isCreator = msgUserId === config.creatorId;
   let imageBlocks: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> = [];
 
   if (isCreator) {
@@ -326,6 +362,8 @@ async function executePipeline(
   let result: TurnResult;
   try {
     log("PIPELINE", `msg=${message.id} processing with agent...`);
+    const activeUserIds = getActiveParticipants(msgChannelId);
+    log("PIPELINE", `msg=${message.id} active participants: ${activeUserIds.length}`);
     result = await processWithAgent(
       discordContext,
       {
@@ -338,6 +376,7 @@ async function executePipeline(
         isReplyToBot: validation.isReplyToBot,
         userId: msgUserId,
         isFollowUp: opts.isFollowUp,
+        activeUserIds,
         ...(imageBlocks.length > 0 ? { imageBlocks } : {}),
       },
       contextRefreshCallback,

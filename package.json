@@ -5,6 +5,8 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "bun test tests/",
+    "test:fast": "bun test tests/ --grep '^(?!live:)'",
     "lint": "tsc --noEmit && knip && madge --circular --extensions ts src/",
     "reset": "rm -f agent-data/session.json && echo '✅ Session reset (kept memories/patterns)'",
     "reset:full": "rm -f agent-data/session.json && rm -rf agent-data/memories/* agent-data/relationships/* agent-data/transcripts/* && git checkout agent-data/learned-patterns.md && echo '✅ Full reset (back to seed state)'",

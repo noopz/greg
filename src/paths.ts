@@ -16,3 +16,8 @@ export const SKILLS_DIR = path.join(PROJECT_DIR, ".claude", "skills");
 export const LOCAL_SKILLS_DIR = path.join(PROJECT_DIR, "local", "skills");
 export const AGENTS_DIR = path.join(PROJECT_DIR, ".claude", "agents");
 export const LOGS_DIR = path.join(PROJECT_DIR, "logs");
+
+/** Sanitize a user ID for use as a filename component. */
+export function safeFileId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
