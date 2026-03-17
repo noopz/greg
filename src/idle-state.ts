@@ -8,6 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { AGENT_DATA_DIR } from "./paths";
+import { atomicWriteFile } from "./persistence";
 import { log } from "./log";
 
 // ============================================================================
@@ -64,7 +65,7 @@ export async function loadIdleState(): Promise<IdleState> {
  */
 export async function saveIdleState(state: IdleState): Promise<void> {
   await fs.mkdir(AGENT_DATA_DIR, { recursive: true });
-  await fs.writeFile(IDLE_STATE_FILE, JSON.stringify(state, null, 2));
+  await atomicWriteFile(IDLE_STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 /**

@@ -55,6 +55,7 @@ export interface StreamingSessionOptions {
   allowedTools: string[];
   hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
   mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
+  maxBudgetUsd?: number;
   env?: Record<string, string | undefined>;
 }
 
@@ -212,6 +213,7 @@ export class StreamingSession {
         allowedTools: options.allowedTools,
         ...(options.hooks ? { hooks: options.hooks } : {}),
         ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
+        ...(options.maxBudgetUsd !== undefined ? { maxBudgetUsd: options.maxBudgetUsd } : {}),
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         includePartialMessages: true,
@@ -233,7 +235,11 @@ export class StreamingSession {
     this._idle = true;
 
     // Close the message channel (terminates the async iterable)
-    this.channel?.close();
+    try {
+      this.channel?.close();
+    } catch {
+      // Already closed
+    }
     this.channel = null;
 
     // Close the query handle (kills subprocess)

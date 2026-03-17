@@ -8,9 +8,9 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { log, error } from "./log";
 import { loadIdleState } from "./idle-state";
-import { BOT_NAME } from "./config/identity";
 import { PROJECT_DIR } from "./paths";
 import type { IdleBehavior } from "./skill-loader";
+import type { PreconditionData } from "./idle-preconditions";
 import { IDLE_SELECTOR_SYSTEM_PROMPT, buildIdleChoicePrompt, parseIdleChoice } from "./gates/idle-selector";
 
 // ============================================================================
@@ -23,7 +23,7 @@ import { IDLE_SELECTOR_SYSTEM_PROMPT, buildIdleChoicePrompt, parseIdleChoice } f
  * Uses a throwaway Haiku call (no session resume) to let Greg pick
  * what he wants to do. This is cheap (~500 tokens) and maintains agency.
  */
-export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[], idleMinutes: number): Promise<IdleBehavior[]> {
+export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[], idleMinutes: number, preconditions?: PreconditionData): Promise<IdleBehavior[]> {
   // Load state to show last run times
   const state = await loadIdleState();
 
@@ -37,7 +37,7 @@ export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[],
     return `${i + 1}. ${b.name} ${source} (last run: ${lastRunInfo})\n   ${b.prompt.split('\n')[0].substring(0, 80)}`;
   }).join("\n");
 
-  const choicePrompt = buildIdleChoicePrompt(optionsList, idleMinutes);
+  const choicePrompt = buildIdleChoicePrompt(optionsList, idleMinutes, preconditions?.globalSummary);
 
   try {
     log("IDLE", "Asking Haiku to choose behavior (one-shot)...");
@@ -49,6 +49,7 @@ export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[],
       options: {
         cwd: PROJECT_DIR,
         model: "haiku", // Cheap and fast
+        maxTurns: 1,
         // No resume - throwaway context
         systemPrompt: IDLE_SELECTOR_SYSTEM_PROMPT,
         allowedTools: [], // No tools needed for this choice

@@ -16,6 +16,7 @@ import { getEffectiveConfig } from "./config/runtime-config";
 import { getLocalToolNames } from "./local-config";
 import { BOT_NAME } from "./config/identity";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import type { StreamingSession } from "./streaming-session";
 
 // ============================================================================
 // Tool Input Logging
@@ -60,7 +61,7 @@ function summarizeToolInput(toolName: string, input: Record<string, unknown>): s
 // Idle Stats Builder
 // ============================================================================
 
-async function buildIdleStats(): Promise<string> {
+export async function buildIdleStats(): Promise<string> {
   const state = await loadIdleState();
   const { config: runtimeConfig } = await getEffectiveConfig();
   const now = Date.now();
@@ -95,7 +96,7 @@ ${lines.join("\n") || neverRun}`;
  * Uses no resume - each idle behavior gets isolated context.
  * This prevents confusion between idle tasks and main conversation.
  */
-export async function executeIdleBehavior(
+export async function executeIdleBehaviorStandalone(
   behavior: IdleBehavior,
   idleMinutes: number,
   toolsServer: McpSdkServerConfigWithInstance | null
@@ -163,6 +164,9 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
         model: behavior.model || "claude-sonnet-4-6", // Use skill's declared model, default to sonnet
         maxTurns: 30,
         maxBudgetUsd: 1.0,
+        settingSources: ["project"],
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
         // NO resume - fresh session each time, prevents context buildup
         systemPrompt: systemContext,
         allowedTools: [
@@ -174,7 +178,7 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
           "Bash",
           "WebSearch",
           "WebFetch",
-          ...(toolsServer ? ["mcp__custom-tools__send_to_channel", "mcp__custom-tools__get_channel_history"] : []),
+          ...(toolsServer ? ["mcp__custom-tools__send_to_channel", "mcp__custom-tools__get_channel_history", "mcp__custom-tools__search_transcripts"] : []),
           ...getLocalToolNames("creator"),
         ],
         mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
@@ -213,4 +217,37 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
     error("IDLE", `Behavior execution failed`, err);
     return null;
   }
+}
+
+/**
+ * Execute an idle behavior on an existing streaming session.
+ * Context accumulates across calls — each behavior sees what prior ones did.
+ */
+export async function executeIdleBehaviorOnSession(
+  behavior: IdleBehavior,
+  session: StreamingSession,
+): Promise<{ responseText: string | null; inputTokens: number }> {
+  const taskPrompt = `## TASK: ${behavior.name.toUpperCase()}
+
+Before starting, briefly note anything relevant from your earlier tasks in this session.
+
+${behavior.prompt}
+
+---
+When done, briefly describe what you did or found.`;
+
+  session.yieldMessage(taskPrompt);
+  const boundary = await session.waitForResponse();
+
+  for (const tool of boundary.toolInputs) {
+    log("IDLE", `Tool: ${tool.name} ${summarizeToolInput(tool.name, tool.input ?? {})}`);
+  }
+  const cost = boundary.resultMessage
+    ? (boundary.resultMessage as { total_cost_usd?: number }).total_cost_usd ?? 0 : 0;
+  log("IDLE", `Cost: $${cost.toFixed(4)} (${boundary.toolInputs.length} tool calls)`);
+
+  return {
+    responseText: boundary.responseText.trim() || null,
+    inputTokens: boundary.lastCallInputTokens,
+  };
 }

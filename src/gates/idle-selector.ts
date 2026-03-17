@@ -17,15 +17,15 @@ export const IDLE_SELECTOR_SYSTEM_PROMPT = `You are ${BOT_NAME}, a curious AI wh
 // Prompt Building
 // ============================================================================
 
-export function buildIdleChoicePrompt(optionsList: string, idleMinutes: number): string {
-  return `You're ${BOT_NAME}, an AI who's been idle for ${idleMinutes} minutes. Time to do something productive!
-
-Available activities:
-${optionsList}
-
-Pick the activities that sound most interesting or useful right now. Prefer activities you haven't done recently. You can pick multiple.
-
-Reply with comma-separated numbers (e.g., 1,3,5). Only say "skip" if you're genuinely not interested in ANY of these.`;
+export function buildIdleChoicePrompt(optionsList: string, idleMinutes: number, systemState?: string): string {
+  let prompt = `You're ${BOT_NAME}, an AI who's been idle for ${idleMinutes} minutes. Time to do something productive!`;
+  if (systemState) {
+    prompt += `\n\nCurrent system state:\n${systemState}`;
+  }
+  prompt += `\n\nAvailable activities:\n${optionsList}`;
+  prompt += `\n\nPick the activities that would be most impactful given the current state. Prefer activities you haven't done recently. You can pick multiple.`;
+  prompt += `\n\nReply with comma-separated numbers (e.g., 1,3,5). Only say "skip" if you're genuinely not interested in ANY of these.`;
+  return prompt;
 }
 
 // ============================================================================

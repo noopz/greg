@@ -13,6 +13,8 @@
  * - Uses the bot to choose from eligible behaviors based on what feels most useful
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Client } from "discord.js-selfbot-v13";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { BotConfig, dmCreator } from "./bot-types";
@@ -21,8 +23,13 @@ import { log, logFull, error } from "./log";
 import { getEffectiveConfig } from "./config/runtime-config";
 import { type IdleConfig, setDebugMode, isDebugMode, isOnCooldown, recordBehaviorRun } from "./idle-state";
 import { getAllIdleBehaviors, formatCooldown } from "./skill-loader";
-import { executeIdleBehavior } from "./idle-executor";
-import { chooseBehaviorWithHaiku, fallbackBehaviorChoice } from "./idle-selector";
+import { StreamingSession } from "./streaming-session";
+import { executeIdleBehaviorOnSession, executeIdleBehaviorStandalone, buildIdleStats } from "./idle-executor";
+import { chooseBehaviorWithHaiku } from "./idle-selector";
+import { gatherPreconditions } from "./idle-preconditions";
+import { AGENT_DATA_DIR, PROJECT_DIR, localDate } from "./paths";
+import { BOT_NAME } from "./config/identity";
+import { getLocalToolNames } from "./local-config";
 import type { IdleBehavior } from "./skill-loader";
 
 // Re-export IdleConfig for index.ts
@@ -139,6 +146,20 @@ class IdleManager {
       return;
     }
 
+    // Set flag immediately to prevent overlapping cycles (before any await)
+    this.isRunningIdleBehavior = true;
+
+    try {
+      await this.runIdleCycle(idleMinutes);
+    } finally {
+      this.isRunningIdleBehavior = false;
+    }
+  }
+
+  /**
+   * Core idle cycle logic — separated so the busy flag can wrap it cleanly.
+   */
+  private async runIdleCycle(idleMinutes: number): Promise<void> {
     // Load all behaviors (built-in + skills) - reloads each time to pick up new skills
     const allBehaviors = await getAllIdleBehaviors();
 
@@ -157,7 +178,16 @@ class IdleManager {
 
     log("IDLE", `${eligibleBehaviors.length} eligible behaviors (of ${allBehaviors.length} total)`);
 
-    const behaviors = await chooseBehaviorWithHaiku(eligibleBehaviors, idleMinutes);
+    // Gather preconditions for informed selection
+    let preconditions;
+    try {
+      preconditions = await gatherPreconditions();
+      log("IDLE", `Preconditions gathered:\n${preconditions.globalSummary}`);
+    } catch (err) {
+      error("IDLE", "Failed to gather preconditions", err);
+    }
+
+    const behaviors = await chooseBehaviorWithHaiku(eligibleBehaviors, idleMinutes, preconditions);
 
     if (behaviors.length === 0) {
       log("IDLE", "No behaviors selected this cycle");
@@ -166,9 +196,81 @@ class IdleManager {
 
     log("IDLE", `Selected ${behaviors.length} behavior(s): ${behaviors.map(b => b.name).join(", ")}`);
 
-    this.isRunningIdleBehavior = true;
+    // Create a local streaming session for the idle batch
+    const session = new StreamingSession("idle");
+    let sessionStarted = false;
 
     try {
+      // Build system prompt for shared session
+      let persona = `You are ${BOT_NAME}, a snarky but helpful AI.`;
+      try {
+        const personaContent = await fs.readFile(
+          path.join(AGENT_DATA_DIR, "persona.md"),
+          "utf-8"
+        );
+        persona = personaContent;
+      } catch {
+        // Use default
+      }
+
+      let idleStats = "";
+      try {
+        idleStats = await buildIdleStats();
+      } catch {
+        // Non-critical
+      }
+
+      const cwd = PROJECT_DIR;
+      const timestamp = `${new Date().toLocaleString()} (${localDate()}, ${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+
+      const systemPrompt = `## YOUR IDENTITY
+${persona}
+
+## WORKING DIRECTORY
+${cwd} — all file paths must be absolute, rooted here.
+
+## CUSTOM TOOLS
+See agent-data/tools.md for available custom tools.
+
+## CURRENT TIME
+${timestamp}
+
+${idleStats}
+
+## CONTEXT
+You've been idle for ${idleMinutes} minutes. You are running a batch of self-directed tasks.
+Each task will be given to you as a user message. Context accumulates — you can
+reference what you learned or read in earlier tasks. When you finish a task,
+briefly summarize what you did.`;
+
+      const allowedTools = [
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebSearch",
+        "WebFetch",
+        ...(this.toolsServer ? ["mcp__custom-tools__send_to_channel", "mcp__custom-tools__get_channel_history", "mcp__custom-tools__search_transcripts"] : []),
+        ...getLocalToolNames("creator"),
+      ];
+
+      session.start({
+        cwd,
+        model: "claude-sonnet-4-6",
+        systemPrompt,
+        allowedTools,
+        maxBudgetUsd: 5.0,
+        mcpServers: this.toolsServer ? { "custom-tools": this.toolsServer } : undefined,
+        env: {
+          ...process.env,
+          KLIPY_API_KEY: process.env.KLIPY_API_KEY,
+        },
+      });
+      sessionStarted = true;
+      log("IDLE", "Started shared idle session");
+
       for (const behavior of behaviors) {
         // Yield to real conversations if main agent became busy
         if (isAgentBusy()) {
@@ -176,34 +278,84 @@ class IdleManager {
           break;
         }
 
+        // Check if session is still alive (may have died from previous skill error)
+        if (!session.isAlive()) {
+          log("IDLE", "Session died, falling back to standalone for remaining skills");
+          // Fall back to standalone for this and remaining behaviors
+          const ok = await this.runStandalone(behavior, idleMinutes);
+          if (ok) await recordBehaviorRun(behavior.name);
+          continue;
+        }
+
         const source = behavior.skillPath ? `skill:${behavior.name}` : `builtin:${behavior.name}`;
-        log("IDLE", `Running: ${source}`);
+        log("IDLE", `Running on shared session: ${source}`);
 
         try {
-          const response = await executeIdleBehavior(behavior, idleMinutes, this.toolsServer);
+          const { responseText, inputTokens } = await executeIdleBehaviorOnSession(behavior, session);
           await recordBehaviorRun(behavior.name);
 
-          if (response) {
-            logFull("IDLE", `${behavior.name} completed: `, response);
+          if (responseText) {
+            logFull("IDLE", `${behavior.name} completed: `, responseText);
           } else {
             log("IDLE", `${behavior.name} completed (no output)`);
           }
 
+          // Send per-skill audit DM
           if (this.client && this.config) {
-            const auditMsg = response
-              ? `[IDLE] **${behavior.name}** completed:\n${response.substring(0, 1800)}`
+            const auditMsg = responseText
+              ? `[IDLE] **${behavior.name}** completed:\n${responseText.substring(0, 1800)}`
               : `[IDLE] **${behavior.name}** completed (no output)`;
             await dmCreator(this.client, this.config.creatorId, auditMsg).catch(err => {
               error("IDLE", "Failed to send idle audit DM", err);
             });
           }
+
+          // Token watchdog: stop batch early if context is getting too large
+          if (inputTokens > 150_000) {
+            log("IDLE", `Context size exceeds 150k (${inputTokens} tokens), stopping batch early`);
+            break;
+          }
         } catch (err) {
           error("IDLE", `Error during idle behavior '${behavior.name}'`, err);
-          // Continue with remaining behaviors
+          // If session died, remaining skills will fall back to standalone via the isAlive check
         }
       }
     } finally {
-      this.isRunningIdleBehavior = false;
+      if (sessionStarted) {
+        session.close();
+        log("IDLE", "Closed idle session");
+      }
+    }
+  }
+
+  /**
+   * Fallback: run a single behavior in standalone mode (no shared session).
+   */
+  private async runStandalone(behavior: IdleBehavior, idleMinutes: number): Promise<boolean> {
+    const source = behavior.skillPath ? `skill:${behavior.name}` : `builtin:${behavior.name}`;
+    log("IDLE", `Running standalone: ${source}`);
+
+    try {
+      const response = await executeIdleBehaviorStandalone(behavior, idleMinutes, this.toolsServer);
+
+      if (response) {
+        logFull("IDLE", `${behavior.name} completed: `, response);
+      } else {
+        log("IDLE", `${behavior.name} completed (no output)`);
+      }
+
+      if (this.client && this.config) {
+        const auditMsg = response
+          ? `[IDLE] **${behavior.name}** (standalone) completed:\n${response.substring(0, 1800)}`
+          : `[IDLE] **${behavior.name}** (standalone) completed (no output)`;
+        await dmCreator(this.client, this.config.creatorId, auditMsg).catch(err => {
+          error("IDLE", "Failed to send idle audit DM", err);
+        });
+      }
+      return true;
+    } catch (err) {
+      error("IDLE", `Error during standalone behavior '${behavior.name}'`, err);
+      return false;
     }
   }
 }
@@ -234,3 +386,4 @@ export function stopIdleLoop(): void {
 export function resetIdleTimer(): void {
   idleManager.resetTimer();
 }
+
