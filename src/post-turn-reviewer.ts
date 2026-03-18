@@ -284,7 +284,19 @@ Recent speakers: ${input.recentSpeakers.join(", ") || "unknown"}`;
 
     // Parse JSON response — may have markdown code fences
     const trimmed = responseText.trim();
-    const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
+
+    // Fast path: empty array (most common response) — handle before regex
+    // to avoid greedy match overshooting into commentary text
+    if (trimmed.startsWith("[]") || trimmed.includes("```\n[]\n```")) {
+      log("REVIEWER", `No misses (${elapsed}ms)`);
+      return [];
+    }
+
+    // Try non-greedy first (handles "[{...}]" followed by commentary),
+    // fall back to greedy for multi-line JSON arrays
+    const jsonMatch = trimmed.match(/\[[\s\S]*?\](?=\s*$)/) // non-greedy, anchored to end
+      ?? trimmed.match(/\[\{[\s\S]*?\}\]/)                   // object array, non-greedy
+      ?? trimmed.match(/\[[\s\S]*\]/);                        // greedy fallback
     if (!jsonMatch) {
       log("REVIEWER", `No JSON array in response (${elapsed}ms): "${trimmed.substring(0, 80)}"`);
       return [];

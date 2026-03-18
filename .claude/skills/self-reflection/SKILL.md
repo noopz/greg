@@ -50,7 +50,7 @@ Maintain `agent-data/hypotheses.md` as your running experiment log:
 
 - **Review active hypotheses** — check recent memories/transcripts for evidence. Did any get confirmed or rejected?
 - **Update status** — move hypotheses between Untested → Testing → Resolved based on evidence
-- **Promote confirmed ones** — if a hypothesis is confirmed with 3+ data points, add it to learned-patterns.md and move it to Resolved
+- **Promote confirmed ones** — if a hypothesis is confirmed with 3+ data points, add it to learned-patterns.md and move it to Resolved. **After writing, re-read learned-patterns.md to verify the write actually happened** — say/do gap on this has occurred 3+ times.
 - **Generate new hypotheses** — what do you wonder about? What would be worth testing? Write them down even if you can't test them yet
 - **Kill dead ones** — if a hypothesis sat untested for 2+ weeks with no opportunity, remove or rethink it
 

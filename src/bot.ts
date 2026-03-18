@@ -165,7 +165,7 @@ async function validateChannel(
   // One-time population of name pool for group DMs
   if (message.channel.type === "GROUP_DM" && "recipients" in message.channel) {
     for (const user of (message.channel as any).recipients) {
-      registerKnownUser(msgChannelId, user.username, userId(user.id));
+      if (user.username) registerKnownUser(msgChannelId, user.username, userId(user.id));
     }
   }
 

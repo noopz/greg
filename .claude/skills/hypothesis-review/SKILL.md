@@ -42,7 +42,7 @@ Don't just look at recent data. Use `search_transcripts` or grep older JSONL fil
 Compare how conversations evolved over weeks. Long-term trends matter.
 
 ### 5. Promote or Kill
-- Confirmed with 3+ data points: promote to learned-patterns.md, move to Resolved
+- Confirmed with 3+ data points: promote to learned-patterns.md, move to Resolved. **After writing, re-read learned-patterns.md to verify** — say/do gap on this has occurred 3+ times in history.
 - Sat untested 2+ weeks with no opportunity: rethink or remove
 - Contradicted by evidence: reject with explanation
 

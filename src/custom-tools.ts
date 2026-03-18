@@ -38,7 +38,7 @@ const REVIEWER_META: Record<string, ToolReviewerMeta> = {
     additive: true,
   },
   search_transcripts: {
-    reviewerHint: "Someone asked about a SPECIFIC past conversation or event ('remember when...', 'you said...', 'didn't you talk to [person]?') and search_transcripts wasn't used. Also flag if bot claimed ignorance without searching first. ALSO flag if the bot attributes a specific statement or opinion to a named person ('X mentioned...', 'X said...', 'X brought up...') without having searched transcripts to verify the attribution — misattribution is worse than not attributing at all. Do NOT flag for rhetorical questions, banter, or roasts ('when have you ever...', 'since when does X...') — those don't need factual transcript lookup.",
+    reviewerHint: "Someone asked about a SPECIFIC past conversation or event ('remember when...', 'you said...', 'didn't you talk to [person]?') and search_transcripts wasn't used. ALSO flag if the bot attributes a specific statement or opinion to a named person ('X mentioned...', 'X said...', 'X brought up...') without having searched transcripts to verify the attribution — misattribution is worse than not attributing at all. Do NOT flag for: rhetorical questions, banter, or roasts ('when have you ever...', 'since when does X...'); casual greetings or small talk; the bot mentioning its own status (being offline, restarting, etc.) — none of these need transcript lookup.",
   },
   schedule_followup: {
     reviewerHint: "Bot promised research or a lookup without calling WebSearch or schedule_followup.",
