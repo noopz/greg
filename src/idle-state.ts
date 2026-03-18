@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { AGENT_DATA_DIR } from "./paths";
 import { atomicWriteFile } from "./persistence";
-import { log } from "./log";
+import { log, warn } from "./log";
 
 // ============================================================================
 // Configuration
@@ -54,8 +54,11 @@ export async function loadIdleState(): Promise<IdleState> {
   try {
     const content = await fs.readFile(IDLE_STATE_FILE, "utf-8");
     return JSON.parse(content) as IdleState;
-  } catch {
-    // Return empty state if file doesn't exist
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { lastRuns: {} };
+    }
+    warn("IDLE", `Failed to parse idle state: ${err instanceof Error ? err.message : String(err)}`);
     return { lastRuns: {} };
   }
 }

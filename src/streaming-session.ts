@@ -250,6 +250,9 @@ export class StreamingSession {
     }
     this.queryHandle = null;
 
+    // Release mutex so any queued acquirer can proceed (and fail on dead session)
+    this.release();
+
     // Reject any pending resolvers
     for (const resolver of this.pendingResolvers) {
       resolver.reject(new Error("Session closed"));

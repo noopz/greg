@@ -6,7 +6,7 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { log, error } from "./log";
+import { log, warn, error } from "./log";
 import { loadIdleState } from "./idle-state";
 import { PROJECT_DIR } from "./paths";
 import type { IdleBehavior } from "./skill-loader";
@@ -39,10 +39,17 @@ export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[],
 
   const choicePrompt = buildIdleChoicePrompt(optionsList, idleMinutes, preconditions?.globalSummary);
 
+  const SELECTOR_TIMEOUT_MS = 10_000;
+  let response = "";
+  let timedOut = false;
+  const abortController = new AbortController();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+  }, SELECTOR_TIMEOUT_MS);
+
   try {
     log("IDLE", "Asking Haiku to choose behavior (one-shot)...");
-
-    let response = "";
 
     for await (const message of query({
       prompt: choicePrompt,
@@ -53,6 +60,7 @@ export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[],
         // No resume - throwaway context
         systemPrompt: IDLE_SELECTOR_SYSTEM_PROMPT,
         allowedTools: [], // No tools needed for this choice
+        abortController,
       },
     })) {
       if (message.type === "assistant" && message.message?.content) {
@@ -83,9 +91,15 @@ export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[],
     log("IDLE", `Couldn't parse choice, falling back to first behavior`);
     return [eligibleBehaviors[0]];
   } catch (err) {
-    error("IDLE", "Haiku choice failed, using fallback", err);
+    if (timedOut) {
+      warn("IDLE", `Selector timed out (${SELECTOR_TIMEOUT_MS}ms), using fallback`);
+    } else {
+      error("IDLE", "Haiku choice failed, using fallback", err);
+    }
     // Fallback to weighted rotation on error
     return fallbackBehaviorChoice(eligibleBehaviors);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

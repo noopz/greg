@@ -378,7 +378,7 @@ export async function executeTurn(
             }
           } catch (err) {
             warn("SDK", `[STREAMING] ReAct iteration ${reactIteration} failed: ${err instanceof Error ? err.message : String(err)}`);
-            sentReplacement = false;
+            // Do NOT reset sentReplacement — if a replacement was already delivered to Discord, that can't be undone
             break;
           }
         }

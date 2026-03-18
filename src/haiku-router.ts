@@ -136,14 +136,14 @@ export function bufferMessage(
     // Check hard limits - trigger immediately if hit
     if (buffer.messages.length >= BUFFER_MAX_MESSAGES) {
       log("BUFFER", `Hit message limit (${BUFFER_MAX_MESSAGES}), triggering classification`);
-      triggerClassification(sessionKey);
+      triggerClassification(sessionKey).catch(err => warn("CLASSIFY", `Classification failed: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
 
     const elapsed = Date.now() - buffer.startedAt;
     if (elapsed >= BUFFER_MAX_WAIT_MS) {
       log("BUFFER", `Hit time limit (${BUFFER_MAX_WAIT_MS}ms), triggering classification`);
-      triggerClassification(sessionKey);
+      triggerClassification(sessionKey).catch(err => warn("CLASSIFY", `Classification failed: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
 
@@ -151,7 +151,7 @@ export function bufferMessage(
     const remainingWait = Math.min(BUFFER_DEBOUNCE_MS, BUFFER_MAX_WAIT_MS - elapsed);
     buffer.timer = setTimeout(() => {
       log("BUFFER", `Debounce expired (${remainingWait}ms), triggering classification`);
-      triggerClassification(sessionKey);
+      triggerClassification(sessionKey).catch(err => warn("CLASSIFY", `Classification failed: ${err instanceof Error ? err.message : String(err)}`));
     }, remainingWait);
   });
 }

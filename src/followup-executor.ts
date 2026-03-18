@@ -38,18 +38,18 @@ export async function executeFollowup(
   task: string,
   channel: TextBasedChannel
 ): Promise<void> {
+  // Get session to fork from (before try so early return doesn't underflow counter)
+  let sessionId = getCurrentSessionId();
+  if (!sessionId) {
+    sessionId = await loadSessionId();
+    if (!sessionId) {
+      warn("FOLLOWUP", "No session to fork from");
+      return;
+    }
+  }
+
   activeFollowups++;
   try {
-    // Get session to fork from
-    let sessionId = getCurrentSessionId();
-    if (!sessionId) {
-      sessionId = await loadSessionId();
-      if (!sessionId) {
-        warn("FOLLOWUP", "No session to fork from");
-        return;
-      }
-    }
-
     const toolsServer = getToolsServer();
     log("FOLLOWUP", `Starting: "${task.substring(0, 80)}"`);
 

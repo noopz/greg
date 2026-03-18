@@ -619,7 +619,7 @@ export async function handleReaction(
       try { reaction = await reaction.fetch() as MessageReaction; } catch { return; }
     }
     if (reaction.message.partial) {
-      try { await reaction.message.fetch(); } catch { return; }
+      try { reaction.message = await reaction.message.fetch(); } catch { return; }
     }
 
     const msg = reaction.message;
