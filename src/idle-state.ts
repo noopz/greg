@@ -82,6 +82,29 @@ export async function recordBehaviorRun(behaviorName: string): Promise<void> {
 }
 
 // ============================================================================
+// Freshness Checks
+// ============================================================================
+
+/**
+ * Check if any transcript file has been modified since the given timestamp.
+ * Used to skip conversation-logging when there's nothing new to process.
+ */
+export async function hasNewTranscriptsSince(timestamp: number): Promise<boolean> {
+  const txDir = path.join(AGENT_DATA_DIR, "transcripts");
+  try {
+    const files = await fs.readdir(txDir);
+    for (const f of files) {
+      if (!f.endsWith(".jsonl")) continue;
+      const stat = await fs.stat(path.join(txDir, f));
+      if (stat.mtimeMs > timestamp) return true;
+    }
+  } catch {
+    // Directory doesn't exist — no transcripts
+  }
+  return false;
+}
+
+// ============================================================================
 // Cooldown Checking
 // ============================================================================
 

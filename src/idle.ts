@@ -21,7 +21,7 @@ import { BotConfig, dmCreator } from "./bot-types";
 import { isAgentBusy } from "./agent";
 import { log, logFull, error } from "./log";
 import { getEffectiveConfig } from "./config/runtime-config";
-import { type IdleConfig, setDebugMode, isDebugMode, isOnCooldown, recordBehaviorRun } from "./idle-state";
+import { type IdleConfig, setDebugMode, isDebugMode, isOnCooldown, recordBehaviorRun, loadIdleState, hasNewTranscriptsSince } from "./idle-state";
 import { getAllIdleBehaviors, formatCooldown } from "./skill-loader";
 import { StreamingSession } from "./streaming-session";
 import { executeIdleBehaviorOnSession, executeIdleBehaviorStandalone, buildIdleStats } from "./idle-executor";
@@ -176,18 +176,44 @@ class IdleManager {
       return;
     }
 
-    log("IDLE", `${eligibleBehaviors.length} eligible behaviors (of ${allBehaviors.length} total)`);
-
-    // Gather preconditions for informed selection
-    let preconditions;
-    try {
-      preconditions = await gatherPreconditions();
-      log("IDLE", `Preconditions gathered:\n${preconditions.globalSummary}`);
-    } catch (err) {
-      error("IDLE", "Failed to gather preconditions", err);
+    // Filter out behaviors that have no new data to process
+    const state = await loadIdleState();
+    const freshBehaviors: typeof eligibleBehaviors = [];
+    for (const behavior of eligibleBehaviors) {
+      if (behavior.name === "conversation-logging") {
+        const lastRun = state.lastRuns[behavior.name] ?? 0;
+        if (!(await hasNewTranscriptsSince(lastRun))) {
+          log("IDLE", "conversation-logging skipped: no new transcripts since last run");
+          continue;
+        }
+      }
+      freshBehaviors.push(behavior);
     }
 
-    const behaviors = await chooseBehaviorWithHaiku(eligibleBehaviors, idleMinutes, preconditions);
+    if (freshBehaviors.length === 0) {
+      log("IDLE", "All behaviors filtered (cooldown or no new data), skipping");
+      return;
+    }
+
+    log("IDLE", `${freshBehaviors.length} eligible behaviors (of ${allBehaviors.length} total)`);
+
+    // Skip selector when only 1 behavior is eligible — not worth a Haiku call
+    let behaviors: typeof freshBehaviors;
+    if (freshBehaviors.length === 1) {
+      log("IDLE", "Single eligible behavior, skipping selector");
+      behaviors = freshBehaviors;
+    } else {
+      // Gather preconditions for informed selection
+      let preconditions;
+      try {
+        preconditions = await gatherPreconditions();
+        log("IDLE", `Preconditions gathered:\n${preconditions.globalSummary}`);
+      } catch (err) {
+        error("IDLE", "Failed to gather preconditions", err);
+      }
+
+      behaviors = await chooseBehaviorWithHaiku(freshBehaviors, idleMinutes, preconditions);
+    }
 
     if (behaviors.length === 0) {
       log("IDLE", "No behaviors selected this cycle");
