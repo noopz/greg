@@ -66,6 +66,54 @@ interface GateContext {
 }
 
 // ============================================================================
+// Stale Response Truncation
+// ============================================================================
+
+export function truncateStaleResponse(
+  text: string,
+  elapsedMs: number,
+  newOtherMessages: number
+): string {
+  if (text.length <= 200) return text;
+  if (elapsedMs <= 15_000) return text;
+  if (newOtherMessages <= 2) return text;
+
+  const sentenceEnd = text.search(/[.!?](\s|$)/);
+  if (sentenceEnd !== -1) {
+    const cutPoint = sentenceEnd + 1;
+    if (cutPoint >= 30 && cutPoint <= 200) {
+      return text.slice(0, cutPoint);
+    }
+  }
+
+  const spaceIdx = text.lastIndexOf(" ", 200);
+  const cutPoint = spaceIdx > 0 ? spaceIdx : 200;
+  return text.slice(0, cutPoint);
+}
+
+async function detectStaleness(
+  message: Message,
+  client: Client
+): Promise<{ elapsedMs: number; newOtherMessages: number }> {
+  const elapsedMs = Date.now() - message.createdTimestamp;
+  try {
+    const recent = await message.channel.messages.fetch({ limit: 10 });
+    const botId = client.user?.id;
+    const triggerUserId = message.author.id;
+    const newOtherMessages = [...recent.values()].filter(
+      (msg) =>
+        msg.createdTimestamp > message.createdTimestamp &&
+        msg.id !== message.id &&
+        msg.author.id !== botId &&
+        msg.author.id !== triggerUserId
+    ).length;
+    return { elapsedMs, newOtherMessages };
+  } catch {
+    return { elapsedMs, newOtherMessages: 0 };
+  }
+}
+
+// ============================================================================
 // Duplicate / Echo Detection
 // ============================================================================
 
@@ -470,22 +518,36 @@ async function deliverResponse(
 
   switch (result.kind) {
     case "response": {
+      let responseText = result.text;
+
+      if (result.toolNamesUsed.size === 0 && responseText.length > 200) {
+        const { elapsedMs, newOtherMessages } = await detectStaleness(message, message.client);
+        const truncated = truncateStaleResponse(responseText, elapsedMs, newOtherMessages);
+        if (truncated.length < responseText.length) {
+          log(
+            "SEND",
+            `Truncated stale response from ${responseText.length} to ${truncated.length} chars (elapsed ${(elapsedMs / 1000).toFixed(1)}s, ${newOtherMessages} new messages)`
+          );
+          responseText = truncated;
+        }
+      }
+
       log(
         "SEND",
-        `msg=${triggerMsgId} user=${resolveUser(msgUserId)} ch=${msgChannelId} → "${result.text.substring(0, 100)}${result.text.length > 100 ? "..." : ""}"`
+        `msg=${triggerMsgId} user=${resolveUser(msgUserId)} ch=${msgChannelId} → "${responseText.substring(0, 100)}${responseText.length > 100 ? "..." : ""}"`
       );
-      if (isDuplicateResponse(msgChannelId, result.text)) {
+      if (isDuplicateResponse(msgChannelId, responseText)) {
         log("SEND", `msg=${triggerMsgId} skipped: duplicate response`);
-      } else if (isEchoResponse(message.content, result.text)) {
+      } else if (isEchoResponse(message.content, responseText)) {
         log("SEND", `msg=${triggerMsgId} skipped: echo response`);
       } else {
         await sendWithTypingSimulation(
           message.channel,
-          result.text,
+          responseText,
           isReplyToBot ? message : undefined
         );
-        indexBotResponse(result.text, String(msgChannelId));
-        lastSentMessage.set(msgChannelId, result.text);
+        indexBotResponse(responseText, String(msgChannelId));
+        lastSentMessage.set(msgChannelId, responseText);
         recordBotResponse(msgChannelId, msgUserId);
       }
       break;

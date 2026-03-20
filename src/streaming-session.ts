@@ -57,6 +57,8 @@ export interface StreamingSessionOptions {
   mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
   maxBudgetUsd?: number;
   env?: Record<string, string | undefined>;
+  /** Session ID to resume from a previous JSONL conversation. */
+  resumeSessionId?: SessionId;
 }
 
 /** Typing callback invoked during streaming output */
@@ -201,7 +203,7 @@ export class StreamingSession {
     this.currentTypingCallback = null;
     this.lastMessageAt = 0;
 
-    log("STREAM", `[${this.label}] Starting streaming session...`);
+    log("STREAM", `[${this.label}] Starting streaming session...${options.resumeSessionId ? ` (resuming ${options.resumeSessionId})` : ""}`);
 
     this.queryHandle = query({
       prompt: this.channel,
@@ -214,6 +216,7 @@ export class StreamingSession {
         ...(options.hooks ? { hooks: options.hooks } : {}),
         ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
         ...(options.maxBudgetUsd !== undefined ? { maxBudgetUsd: options.maxBudgetUsd } : {}),
+        ...(options.resumeSessionId ? { resume: options.resumeSessionId } : {}),
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         includePartialMessages: true,

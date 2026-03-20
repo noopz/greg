@@ -178,11 +178,12 @@ export async function executeTurn(
       allowedTools,
       ...(accessHooks ? { hooks: accessHooks } : {}),
       mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
+      resumeSessionId: sessionId,
       env: {
         KLIPY_API_KEY: process.env.KLIPY_API_KEY,
       },
     });
-    log("SDK", `[STREAMING] Session started, will bootstrap on first message`);
+    log("SDK", `[STREAMING] Session started${sessionId ? ` (resuming ${sessionId})` : ", will bootstrap on first message"}`);
   }
 
   // Set search context (global fallback always works; session-keyed set if we have a session ID)
