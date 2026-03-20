@@ -506,8 +506,8 @@ export class StreamingSession {
             this.currentToolNames.add(block.name);
             const input = block.input as Record<string, unknown>;
             this.currentToolInputs.push({ name: block.name, input });
-            // Log file path for file tools, otherwise just tool name
-            const target = input?.file_path ?? input?.command ?? "";
+            // Log file path/pattern/query for tool calls
+            const target = input?.file_path ?? input?.command ?? input?.pattern ?? input?.query ?? "";
             const suffix = target ? `: ${String(target).substring(0, 120)}` : "";
             log("STREAM", `[${this.label}] Tool call: ${block.name}${suffix}`);
           }

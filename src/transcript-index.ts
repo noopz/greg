@@ -415,6 +415,13 @@ export function searchTranscripts(
 
     try {
       rows = db.query(sql).all(...params) as typeof rows;
+      // FTS5 implicit AND is too restrictive for multi-word queries —
+      // if raw query returns nothing and has multiple tokens, retry with OR
+      if (rows.length === 0 && effective.length > 1) {
+        log("FTS", `Raw query returned 0 results, retrying with OR-tokenized: ${fallbackQuery}`);
+        params[0] = fallbackQuery;
+        rows = db.query(sql).all(...params) as typeof rows;
+      }
     } catch {
       // FTS5 rejected the raw query — fall back to OR-tokenized version
       log("FTS", `Raw query failed, falling back to OR-tokenized: ${fallbackQuery}`);
