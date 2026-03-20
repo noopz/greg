@@ -48,6 +48,7 @@ import {
   buildSystemPromptConfig,
   buildAllowedTools,
   sanitizeResponse,
+  findOverlappingParagraphs,
   extractUserIds,
   getSystemPromptMode,
   resolveUser,
@@ -170,6 +171,9 @@ export async function executeTurn(
   const isNewSession = !session.isAlive();
   if (isNewSession) {
     log("SDK", `[STREAMING] ${session.label} session not alive — starting...`);
+    // Resume from session's own last ID, or from persisted ID for creator only.
+    // Public session must never resume the creator's persisted session ID.
+    const resumeId = session.lastSessionId ?? (options.isCreator ? sessionId : undefined);
     const systemPromptConfig = buildSystemPromptConfig(persona);
     session.start({
       cwd: PROJECT_DIR,
@@ -178,12 +182,12 @@ export async function executeTurn(
       allowedTools,
       ...(accessHooks ? { hooks: accessHooks } : {}),
       mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
-      resumeSessionId: sessionId,
+      resumeSessionId: resumeId,
       env: {
         KLIPY_API_KEY: process.env.KLIPY_API_KEY,
       },
     });
-    log("SDK", `[STREAMING] Session started${sessionId ? ` (resuming ${sessionId})` : ", will bootstrap on first message"}`);
+    log("SDK", `[STREAMING] Session started${resumeId ? ` (resuming ${resumeId})` : ", will bootstrap on first message"}`);
   }
 
   // Set search context (global fallback always works; session-keyed set if we have a session ID)
@@ -441,9 +445,13 @@ export async function executeTurn(
       }
     }
 
-    const sanitized = sanitizeResponse(response.trim());
+    let sanitized = sanitizeResponse(response.trim());
     if (!sanitized) {
       return { kind: "skipped", reason: "empty after sanitize" };
+    }
+    sanitized = await dedupParagraphs(sanitized);
+    if (!sanitized.trim()) {
+      return { kind: "skipped", reason: "empty after dedup" };
     }
     return { kind: "response", text: sanitized, toolNamesUsed };
 
@@ -591,6 +599,90 @@ function buildReviewerContinuation(
     return [{ type: "text", text }, ...imageBlocks];
   }
   return text;
+}
+
+// ============================================================================
+// Paragraph Dedup (Haiku judge for near-duplicate paragraphs)
+// ============================================================================
+
+const DEDUP_TIMEOUT_MS = 8_000;
+
+/**
+ * If consecutive paragraphs share any bigram overlap, ask Haiku to judge
+ * whether they're saying the same thing. Returns cleaned text.
+ * Cheap gate (bigram overlap) → expensive judge (Haiku) only when needed.
+ */
+async function dedupParagraphs(text: string): Promise<string> {
+  const pairs = findOverlappingParagraphs(text);
+  if (pairs.length === 0) return text;
+
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+  log("SDK", `Found ${pairs.length} paragraph pair(s) with bigram overlap — asking Haiku to judge`);
+
+  const indicesToDrop = new Set<number>();
+
+  for (const { i, j, overlap } of pairs) {
+    if (indicesToDrop.has(i) || indicesToDrop.has(j)) continue;
+
+    const prompt = `Two consecutive paragraphs from a Discord message. Are they saying the same thing (paraphrases/near-duplicates)?
+
+Paragraph A:
+"${paragraphs[i]}"
+
+Paragraph B:
+"${paragraphs[j]}"
+
+If they say essentially the same thing, reply: DROP_SECOND
+If paragraph A is just a preview/announcement of what B reports as done, reply: DROP_FIRST
+If they make genuinely different points, reply: KEEP_BOTH
+
+Reply with ONLY one of: DROP_FIRST, DROP_SECOND, or KEEP_BOTH`;
+
+    try {
+      let responseText = "";
+      const abortController = new AbortController();
+      const timer = setTimeout(() => abortController.abort(), DEDUP_TIMEOUT_MS);
+
+      try {
+        for await (const message of query({
+          prompt,
+          options: {
+            cwd: PROJECT_DIR,
+            model: "haiku",
+            systemPrompt: "You compare two paragraphs and decide if they are near-duplicates. Reply with exactly one of: DROP_FIRST, DROP_SECOND, or KEEP_BOTH. Nothing else.",
+            allowedTools: [],
+            abortController,
+          },
+        })) {
+          if (message.type === "assistant" && message.message?.content) {
+            for (const block of message.message.content) {
+              if ("text" in block) responseText += block.text;
+            }
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+
+      const verdict = responseText.trim().toUpperCase();
+      if (verdict.includes("DROP_FIRST")) {
+        log("SDK", `Haiku dedup: dropping paragraph ${i} (overlap=${overlap.toFixed(2)}): "${paragraphs[i].substring(0, 60)}..."`);
+        indicesToDrop.add(i);
+      } else if (verdict.includes("DROP_SECOND")) {
+        log("SDK", `Haiku dedup: dropping paragraph ${j} (overlap=${overlap.toFixed(2)}): "${paragraphs[j].substring(0, 60)}..."`);
+        indicesToDrop.add(j);
+      } else {
+        log("SDK", `Haiku dedup: keeping both paragraphs ${i}/${j} (overlap=${overlap.toFixed(2)})`);
+      }
+    } catch (err) {
+      warn("SDK", `Haiku dedup failed for pair ${i}/${j}, keeping both: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (indicesToDrop.size === 0) return text;
+
+  const kept = paragraphs.filter((_, idx) => !indicesToDrop.has(idx));
+  return kept.join("\n\n");
 }
 
 /** Extract the current message author and content from a Discord context string for the reviewer. */

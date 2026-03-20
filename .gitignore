@@ -63,3 +63,4 @@ agent-data/impressions/*.md
 
 # Cross-file index (local dev artifact)
 .strata/
+.claude/worktrees/

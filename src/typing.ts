@@ -168,10 +168,17 @@ function enforceCharLimit(chunks: string[]): string[] {
  * Enforces a max chunk limit to prevent wall-of-text spam.
  */
 export function splitIntoChunks(response: string, maxChunks: number = MAX_MESSAGE_CHUNKS): string[] {
+  // Short responses (under 500 chars) — always send as one message
+  // Prevents near-duplicate paragraphs from becoming separate Discord messages
+  // Exception: responses containing URLs should still split so GIFs auto-embed cleanly
+  if (response.trim().length < 500 && !response.includes("http")) {
+    return enforceCharLimit([response.trim()]);
+  }
+
   // Split on double newlines (paragraphs)
   const chunks = response.split(/\n\n+/).map(c => c.trim()).filter(c => c.length > 0);
 
-  // Single paragraph or very short — send as one message
+  // Single paragraph — send as one message
   if (chunks.length <= 1) {
     return enforceCharLimit([response.trim()]);
   }

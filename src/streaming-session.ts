@@ -128,6 +128,7 @@ export class StreamingSession {
   private channel: MessageChannel | null = null;
   private queryHandle: Query | null = null;
   private _sessionId: SessionId | undefined;
+  private _lastSessionId: SessionId | undefined;
   private _alive = false;
   private _idle = true;
   private outputConsumerDone: Promise<void> | null = null;
@@ -142,6 +143,7 @@ export class StreamingSession {
   private currentResponse = "";
   private currentToolNames = new Set<string>();
   private currentToolInputs: Array<{ name: string; input?: Record<string, unknown> }> = [];
+  private toolsSinceLastText = false;
   private lastCallInputTokens = 0;
 
   // Typing callback for the current turn (set by yieldMessage, cleared by waitForResponse)
@@ -195,11 +197,13 @@ export class StreamingSession {
     this.channel = new MessageChannel();
     this._alive = true;
     this._idle = true;
+    if (this._sessionId) this._lastSessionId = this._sessionId;
     this._sessionId = undefined;
     this.pendingResolvers = [];
     this.currentResponse = "";
     this.currentToolNames.clear();
     this.currentToolInputs = [];
+    this.toolsSinceLastText = false;
     this.currentTypingCallback = null;
     this.lastMessageAt = 0;
 
@@ -290,6 +294,7 @@ export class StreamingSession {
     this.currentResponse = "";
     this.currentToolNames.clear();
     this.currentToolInputs = [];
+    this.toolsSinceLastText = false;
     this.lastCallInputTokens = 0;
 
     const messageContent = content;
@@ -394,6 +399,10 @@ export class StreamingSession {
     return this._sessionId;
   }
 
+  get lastSessionId(): SessionId | undefined {
+    return this._lastSessionId;
+  }
+
   isAlive(): boolean {
     return this._alive;
   }
@@ -476,12 +485,24 @@ export class StreamingSession {
       if (assistantMsg.message?.content) {
         for (const block of assistantMsg.message.content) {
           if (block.type === "text") {
-            if (this.currentResponse.length > 0 && !this.currentResponse.endsWith("\n")) {
+            // If tools were used since the last text block, the new text is the
+            // post-tool summary — replace the pre-tool narration to avoid
+            // near-duplicate "I'm about to do X" / "I did X" responses.
+            // Only replace on the FIRST tool boundary (not subsequent rounds
+            // where intermediate text may be substantive).
+            if (this.currentResponse.length > 0 && this.toolsSinceLastText) {
+              log("STREAM", `[${this.label}] Replacing pre-tool text (${this.currentResponse.length} chars) with post-tool text (${block.text.length} chars)`);
+              this.currentResponse = block.text;
+            } else if (this.currentResponse.length > 0 && !this.currentResponse.endsWith("\n")) {
               this.currentResponse += "\n\n";
+              this.currentResponse += block.text;
+            } else {
+              this.currentResponse += block.text;
             }
-            this.currentResponse += block.text;
+            this.toolsSinceLastText = false;
             log("STREAM", `[${this.label}] Assistant text: ${block.text.length} chars (total: ${this.currentResponse.length})`);
           } else if (block.type === "tool_use") {
+            this.toolsSinceLastText = true;
             this.currentToolNames.add(block.name);
             const input = block.input as Record<string, unknown>;
             this.currentToolInputs.push({ name: block.name, input });
@@ -525,6 +546,7 @@ export class StreamingSession {
       this.currentResponse = "";
       this.currentToolNames.clear();
       this.currentToolInputs = [];
+      this.toolsSinceLastText = false;
 
       // Resolve the oldest pending waiter (FIFO)
       if (this.pendingResolvers.length > 0) {

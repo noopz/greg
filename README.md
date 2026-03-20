@@ -1,76 +1,51 @@
 # Greg
 
-A self-improving AI that lives in your Discord group chat as a real participant — not a bot you summon, but a personality that listens, remembers, forms opinions about people, and rewrites its own behavior over time.
+A self-learning Discord bot built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk). Greg lives in your group chat as a persistent personality — he remembers conversations, forms opinions, learns behavioral patterns, and develops relationships with individual users over time.
 
-Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk). No fine-tuning, no weight updates — everything runs on a frozen model with prompt-level adaptation.
+This is a **selfbot** (runs as a user account, not a bot account). It uses `discord.js-selfbot-v13` to connect to Discord.
 
-> **Disclaimer:** Greg is a **selfbot** (runs as a user account via `discord.js-selfbot-v13`). This violates Discord's Terms of Service. Provided for **educational and research purposes only**. Use at your own risk.
+> **Disclaimer:** This project is provided for **educational and research purposes only**. Selfbots violate Discord's Terms of Service. I am not responsible for any Discord accounts that are suspended or banned as a result of using this software. No support is provided. Use entirely at your own risk.
 
-## This is not a chatbot
+## What makes it different
 
-Most AI bots — including CLI agent frameworks like [OpenClaw](https://github.com/openclaw) — are **tool agents**. You give them a task, they execute it. They're assistants.
+Most AI bots are stateless assistants — they answer questions and forget you exist. Greg is designed to be a **persistent member of your friend group**:
 
-Greg is a **social agent**. The hard problem isn't "execute the right command." It's "should I even be talking right now?" There's no benchmark for that. The evaluation function is whether real people in a real group chat want him around.
+- **Remembers everything** — writes memories to disk, maintains per-user relationship notes, tracks conversation patterns. Ask about something from two weeks ago and it knows.
+- **Learns and adapts** — updates its own behavioral patterns based on what works and what doesn't. Gets better at matching your group's vibe over time.
+- **Acts, doesn't just talk** — uses tools (GIF search, web search, file operations, transcript search) on its own initiative. A post-turn reviewer catches missed opportunities and retries.
+- **Has downtime behaviors** — when nobody's talking, it researches topics, maintains memories, consolidates patterns, or starts conversations based on configurable idle skills.
+- **Knows its boundaries** — access control gives the creator full file/shell access while other users are path-gated to safe operations.
 
-**Greg decides when to talk.** A response gate tracks conversation confidence — how likely is a reply welcome right now? Sometimes the answer is "stay quiet." Real people don't respond to every message. Neither should a bot.
+## Features
 
-**Greg gets better while idle.** When nobody's chatting, an idle loop runs self-directed skills — reviewing conversations, updating notes on people, reflecting on what's working. He's always refining his understanding, even when the chat is dead.
-
-**Greg rewrites his own personality.** The persona file isn't config you write once. It's an output of the system. Behavioral patterns the bot discovers get promoted into the persona itself. The bot you deploy is not the bot you have a month later.
-
-## How it works
-
-### Layered memory
-
-| Layer | What it stores | How it evolves |
-|-------|---------------|----------------|
-| **Transcripts** | Every conversation, append-only JSONL | Raw record, never modified |
-| **Impressions** | Per-user observations ("sarcastic," "hates being corrected") | Weight decay on old entries, consolidation merges redundant ones |
-| **Learned patterns** | Behavioral insights ("shorter replies land better," "don't explain jokes") | Proven patterns promoted into persona |
-| **Persona** | The bot's personality and identity | Rewritten by the bot based on accumulated experience |
-
-This isn't RAG. There's no vector store, no semantic similarity search over chunks. Each layer has a specific structure, a specific update mechanism, and a specific decay/promotion lifecycle.
-
-### The idle loop
-
-The bot is idle 90%+ of the time. That time is productive:
-
-- **Conversation logging** (30min) — extract insights from recent transcripts
-- **Pattern learning** (6hr) — reflect on interactions, write behavioral observations
-- **Self-reflection** (12hr) — step back, evaluate overall approach and blind spots
-- **Impression consolidation** (daily) — merge per-user notes, decay old observations
-- **Hypothesis review** (daily) — test hypotheses about users against new evidence
-
-Skills are markdown files with prompts and cooldowns. Adding a new idle behavior is creating a file.
-
-The system is cost-conscious by design: it skips skills when there's no new data to process, skips the selector model when only one skill is eligible, and uses cheap models (Haiku) for gating decisions while reserving expensive models (Sonnet) for actual work.
-
-### Conversation handling
-
-- **Turn queue** — debounces rapid messages, coalesces related inputs, retries transient errors
-- **Streaming sessions** — long-lived Claude sessions maintain full conversation context
-- **Post-turn review** — a fast model checks every response for missed opportunities (should you have searched for that? sent a GIF?) and retries if so
-- **Tool use** — GIF search, web search, transcript search (FTS5), background research, file operations
+- **Streaming sessions** — long-lived Claude sessions via the Agent SDK with full conversation context
+- **Turn queue** — debouncing, message coalescing, and transient error retry
+- **Response gate** — decides whether to respond using conversation confidence tracking (not every message needs a reply)
+- **Self-improvement** — writes memories, updates relationship files, refines behavioral patterns, creates new skills and subagents
+- **Idle behaviors** — skill-based autonomous actions with configurable cooldowns
+- **Tool use** — GIF search, transcript search (FTS5), background research tasks, file operations, web search
+- **Post-turn review** — Haiku reviewer with ReAct loop checks for missed tool opportunities
 - **Access control** — PreToolUse hooks enforce path restrictions for non-creator users
 
-## Setup
-
-### Requirements
+## Requirements
 
 - [Bun](https://bun.sh) runtime
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) (authenticated — the Agent SDK uses CLI auth, no API key needed)
 - A Discord user account token
 
-### Quick start
+## Setup
 
 ```bash
+# Clone and install
 git clone https://github.com/noopz/greg.git
 cd greg
 bun install
 
+# Configure
 cp .env.example .env
 # Edit .env with your values (see below)
 
+# Run
 bun run dev          # Development with watch mode
 bun run start        # Production
 ```
@@ -79,32 +54,44 @@ bun run start        # Production
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DISCORD_TOKEN` | Yes | Discord user token (DevTools -> Network -> Authorization header) |
-| `CREATOR_USER_ID` | Yes | Your Discord user ID (right-click -> Copy User ID) |
+| `DISCORD_TOKEN` | Yes | Discord user token (DevTools → Network → Authorization header) |
+| `CREATOR_USER_ID` | Yes | Your Discord user ID (right-click → Copy User ID) |
 | `CHANNEL_IDS` | Yes | Comma-separated Discord channel IDs to watch (from URL) |
 | `BOT_NAME` | No | Display name (default: "Greg") |
 | `KLIPY_API_KEY` | No | GIF search via [Klipy](https://partner.klipy.com/api-keys) (free) |
 | `ENABLE_IMAGES` | No | Set to "1" to enable image vision |
 | `LOG_TO_FILE` | No | File logging (default: true) |
 
-### Persona
+### Initial persona
 
-On first run, Greg needs an identity. A sample `agent-data/persona.md` is included — it's an example, not something to run as-is.
+On first run, the bot needs an identity. A **sample** `agent-data/persona.md` is included as a starting point — it's an example personality, not something you should run as-is. **You must customize it:**
 
-1. Update the **name** and **Discord username** to match your bot's account
-2. Update the **trigger words** (names/phrases the bot responds to)
-3. **Rewrite the personality.** This defines everything about how the bot behaves. Make it yours.
+1. Update the **name** and **Discord username** on line 5 to match your bot's Discord account
+2. Update the **trigger words** on line 6 (these are the names/phrases the bot responds to)
+3. **Rewrite the personality** to fit your bot — the sample persona is just one example of what's possible. Make it your own.
 
-The persona gets loaded into every conversation turn. Over time, the bot will modify it based on what it learns.
+The persona is loaded into every conversation turn and defines how the bot behaves. The more thought you put into it, the more distinct your bot will feel.
 
 Other optional files in `agent-data/`:
-- `learned-patterns.md` — behavioral insights the bot accumulates over time
-- `values-integrity.md` — core principles that shouldn't be overridden
+- `learned-patterns.md` — behavioral insights the bot accumulates
+- `values-integrity.md` — core principles
 - `runtime-config.json` — runtime behavior settings (idle timing, disabled skills, keywords)
 
-## Extending
+## Architecture
 
-Skills (`.claude/skills/`) and subagents (`.claude/agents/`) are markdown-defined and hot-reloaded. The `local/` directory convention supports personal tools and skills that don't sync to the public repo:
+See [DEVELOPMENT.md](DEVELOPMENT.md) for full architecture docs, file structure, model usage, and token management details.
+
+### Key concepts
+
+- **Skills** (`.claude/skills/`) — markdown-defined behaviors with optional idle triggers and cooldowns
+- **Subagents** (`.claude/agents/`) — specialized helpers spawned via the Task tool (e.g., web-lookup, meme-finder)
+- **Streaming sessions** — persistent Claude sessions that maintain conversation context across messages
+- **Access control** — PreToolUse hooks enforce path restrictions for non-creator users
+- **Transcript search** — FTS5-indexed conversation history, searchable via the `search_transcripts` tool
+
+### Extending with personal tools
+
+The framework supports a `local/` directory convention for personal content that doesn't get synced to the public repo:
 
 ```
 local/
@@ -113,7 +100,7 @@ local/
   tools/index.ts     # Personal MCP tools (dynamically imported at startup)
 ```
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for full architecture docs, file structure, and model usage details.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for details on the `local/` convention.
 
 ## Linting
 

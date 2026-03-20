@@ -10,6 +10,8 @@
  * 2. Update agent-data/tools.md so the bot can discover it
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Client, TextChannel } from "discord.js-selfbot-v13";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -21,6 +23,7 @@ import { searchTranscripts, formatSearchResults, getSearchContext, getSearchCont
 import { getStreamingSession } from "./streaming-session";
 import { recordBotActivity } from "./conversation";
 import { channelId as toChannelId } from "./agent-types";
+import { AGENT_DATA_DIR } from "./paths";
 import { BOT_NAME } from "./config/identity";
 
 // Reviewer metadata — co-located with tool definitions so adding a tool = one file to edit.
@@ -39,6 +42,9 @@ const REVIEWER_META: Record<string, ToolReviewerMeta> = {
   },
   search_transcripts: {
     reviewerHint: "Someone asked about a SPECIFIC past conversation or event ('remember when...', 'you said...', 'didn't you talk to [person]?') and search_transcripts wasn't used. ALSO flag if the bot attributes a specific statement or opinion to a named person ('X mentioned...', 'X said...', 'X brought up...') without having searched transcripts to verify the attribution — misattribution is worse than not attributing at all. Do NOT flag for: rhetorical questions, banter, or roasts ('when have you ever...', 'since when does X...'); casual greetings or small talk; the bot mentioning its own status (being offline, restarting, etc.) — none of these need transcript lookup.",
+  },
+  get_reaction_stats: {
+    reviewerHint: "Someone asked about reaction data, which messages land best, engagement patterns, or GIF vs text performance, and get_reaction_stats wasn't used. Do NOT flag for casual banter about reactions or rhetorical questions.",
   },
   schedule_followup: {
     reviewerHint: "Bot promised research or a lookup without calling WebSearch or schedule_followup.",
@@ -298,6 +304,88 @@ When the moment calls for a reaction, search first, text second. Send ONLY the G
           } catch (err) {
             logError("MCP", "react_to_message failed", err);
             return { content: [{ type: "text" as const, text: `Error reacting to message: ${err}` }] };
+          }
+        }
+      ),
+
+    tool(
+        "get_reaction_stats",
+        `Get aggregated stats on reactions to your messages. Shows which messages got the most reactions, emoji breakdown, and GIF vs text performance. Use when someone asks about reaction data, which messages landed best, or what content people engage with most.`,
+        {
+          days: z.number().min(1).max(90).default(30).describe("Look back N days (default 30)"),
+          top_n: z.number().min(1).max(20).default(10).describe("Number of top messages to return (default 10)"),
+        },
+        async (args) => {
+          try {
+            const feedbackPath = path.join(AGENT_DATA_DIR, "reaction-feedback.jsonl");
+            const content = await fs.readFile(feedbackPath, "utf-8").catch(() => "");
+            if (!content.trim()) {
+              return { content: [{ type: "text" as const, text: "No reaction data found." }] };
+            }
+
+            const cutoff = Date.now() - args.days * 86_400_000;
+            const entries = content.trim().split("\n").filter(Boolean).map(line => {
+              try { return JSON.parse(line); } catch { return null; }
+            }).filter((e): e is { emoji: string; user: string; messageId: string; isGif: boolean; messagePreview: string; when: string } =>
+              e !== null && new Date(e.when).getTime() >= cutoff
+            );
+
+            if (entries.length === 0) {
+              return { content: [{ type: "text" as const, text: `No reactions in the last ${args.days} days.` }] };
+            }
+
+            // Aggregate by message
+            const byMessage = new Map<string, { preview: string; isGif: boolean; emojis: string[]; users: Set<string> }>();
+            const emojiCounts = new Map<string, number>();
+            let gifReactions = 0;
+            let textReactions = 0;
+
+            for (const e of entries) {
+              const msg = byMessage.get(e.messageId) ?? { preview: e.messagePreview, isGif: e.isGif, emojis: [], users: new Set() };
+              msg.emojis.push(e.emoji);
+              msg.users.add(e.user);
+              byMessage.set(e.messageId, msg);
+
+              emojiCounts.set(e.emoji, (emojiCounts.get(e.emoji) ?? 0) + 1);
+              if (e.isGif) gifReactions++; else textReactions++;
+            }
+
+            // Top messages by reaction count
+            const topMessages = [...byMessage.entries()]
+              .sort((a, b) => b[1].emojis.length - a[1].emojis.length)
+              .slice(0, args.top_n);
+
+            // Top emojis
+            const topEmojis = [...emojiCounts.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 10);
+
+            let output = `## Reaction Stats (last ${args.days} days)\n\n`;
+            output += `**Total reactions:** ${entries.length}\n`;
+            output += `**Unique messages reacted to:** ${byMessage.size}\n`;
+            output += `**GIF reactions:** ${gifReactions} | **Text reactions:** ${textReactions}`;
+            if (gifReactions + textReactions > 0) {
+              const gifMsgs = [...byMessage.values()].filter(m => m.isGif).length;
+              const textMsgs = [...byMessage.values()].filter(m => !m.isGif).length;
+              if (gifMsgs > 0) output += ` | **Avg per GIF:** ${(gifReactions / gifMsgs).toFixed(1)}`;
+              if (textMsgs > 0) output += ` | **Avg per text:** ${(textReactions / textMsgs).toFixed(1)}`;
+            }
+            output += `\n\n### Top Emojis\n`;
+            for (const [emoji, count] of topEmojis) {
+              output += `${emoji} × ${count}\n`;
+            }
+
+            output += `\n### Top Messages\n`;
+            for (const [msgId, data] of topMessages) {
+              const emojiStr = data.emojis.join(" ");
+              output += `\n**${data.isGif ? "GIF" : "Text"}** (${data.emojis.length} reactions from ${data.users.size} users): ${emojiStr}\n> ${data.preview.substring(0, 120)}\n`;
+            }
+
+            log("MCP", `get_reaction_stats: ${entries.length} reactions across ${byMessage.size} messages (last ${args.days}d)`);
+            return { content: [{ type: "text" as const, text: output }] };
+          } catch (err) {
+            logError("MCP", "get_reaction_stats failed", err);
+            return { content: [{ type: "text" as const, text: `Error reading reaction stats: ${err}` }] };
           }
         }
       ),

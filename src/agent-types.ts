@@ -193,7 +193,7 @@ export function buildAllowedTools(isCreator: boolean, hasCustomTools: boolean): 
   const frameworkCustomTools = hasCustomTools
     ? ["mcp__custom-tools__send_to_channel", "mcp__custom-tools__schedule_followup",
        "mcp__custom-tools__search_gif", "mcp__custom-tools__react_to_message",
-       "mcp__custom-tools__search_transcripts"]
+       "mcp__custom-tools__search_transcripts", "mcp__custom-tools__get_reaction_stats"]
     : [];
   // Framework tools restricted to creator
   const creatorOnlyCustomTools = hasCustomTools
@@ -230,7 +230,7 @@ const LEAKED_REASONING_PATTERNS: RegExp[] = [
   /^let\s+me\s+(think|reason|analyze|consider|figure|work)\s+(about|through|on)\b/i,
   /^(now\s+)?let\s+me\s+(compile|put|pull|gather|summarize|organize)\s+(this|that|the|all|it)\s+(together|all|into)\b/i,
   // API errors leaked as assistant text (SDK crash artifacts)
-  /^API Error:\s*\d{3}\b/,
+  /^API Error:/,
   /^\{?"type"\s*:\s*"error"/,
 ];
 
@@ -279,6 +279,48 @@ export function sanitizeResponse(response: string): string {
   }
 
   return sanitized.trim();
+}
+
+/**
+ * Compute bigram overlap between two paragraphs.
+ * Returns a ratio (0-1) of shared bigrams / total unique bigrams (Jaccard).
+ * Used as a cheap gate before calling Haiku for dedup judgment.
+ */
+export function bigramOverlap(a: string, b: string): number {
+  const tokenize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+  const bigrams = (words: string[]) => {
+    const set = new Set<string>();
+    for (let i = 0; i < words.length - 1; i++) set.add(`${words[i]} ${words[i + 1]}`);
+    return set;
+  };
+  const wordsA = tokenize(a);
+  const wordsB = tokenize(b);
+  if (wordsA.length < 4 || wordsB.length < 4) return 0;
+
+  const setA = bigrams(wordsA);
+  const setB = bigrams(wordsB);
+  if (setA.size === 0 || setB.size === 0) return 0;
+
+  let overlap = 0;
+  for (const bg of setA) if (setB.has(bg)) overlap++;
+  // Jaccard: intersection / union
+  return overlap / (setA.size + setB.size - overlap);
+}
+
+/**
+ * Find consecutive paragraph pairs with non-zero bigram overlap.
+ * Returns indices of pairs that should be evaluated by Haiku.
+ */
+export function findOverlappingParagraphs(text: string): Array<{ i: number; j: number; overlap: number }> {
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+  const pairs: Array<{ i: number; j: number; overlap: number }> = [];
+  for (let i = 0; i < paragraphs.length - 1; i++) {
+    const overlap = bigramOverlap(paragraphs[i], paragraphs[i + 1]);
+    if (overlap > 0) {
+      pairs.push({ i, j: i + 1, overlap });
+    }
+  }
+  return pairs;
 }
 
 /**
