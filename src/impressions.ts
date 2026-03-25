@@ -186,14 +186,14 @@ export async function loadImpressions(userIds: string[]): Promise<string | null>
       // Format as markdown bullet points
       const bullets = capped.map((imp) => {
         // Truncate long impressions to stay within token budget
-        const truncatedWhat = imp.what.length > 150
-          ? imp.what.substring(0, 147) + "..."
+        const truncatedWhat = imp.what.length > 250
+          ? imp.what.substring(0, 247) + "..."
           : imp.what;
-        const effective = decayedScore(imp.weight, imp.when, nowMs);
-        return `- ${truncatedWhat} (weight: ${effective.toFixed(1)})`;
+        return `- ${truncatedWhat}`;
       });
 
-      sections.push(`### ${userId}\n${bullets.join("\n")}`);
+      const displayName = capped[0]?.who || userId;
+      sections.push(`### ${displayName}\n${bullets.join("\n")}`);
     } catch (err) {
       warn(LOG_TAG, `Failed to load impressions for ${userId}: ${err instanceof Error ? err.message : String(err)}`);
       // Continue with other users

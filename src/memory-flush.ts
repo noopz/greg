@@ -14,6 +14,7 @@ import {
   type SessionData,
 } from "./persistence";
 import { log, warn, error as logError } from "./log";
+import { recordCost } from "./cost-tracker";
 import { loadSessionData, saveSessionData } from "./session-manager";
 import type { SessionId } from "./agent-types";
 import { BOT_NAME } from "./config/identity";
@@ -25,8 +26,8 @@ let memoryFlushInProgress = false;
 let shouldStartFreshSession = false;
 
 // Constants
-const SOFT_THRESHOLD_TOKENS = 140000; // 140k tokens - trigger memory flush (raised from 116k to reduce unnecessary flushes)
-const MEMORY_FLUSH_BUFFER = 10000; // Minimum tokens to accumulate before re-triggering flush
+const SOFT_THRESHOLD_TOKENS = 400000; // 400k tokens - trigger memory flush (~40% of 1M context window)
+const MEMORY_FLUSH_BUFFER = 30000; // Minimum tokens to accumulate before re-triggering flush
 
 /** Check if a fresh session should be started (set after memory flush completes) */
 export function getShouldStartFreshSession(): boolean {
@@ -225,6 +226,7 @@ Be efficient - only update files if there's something genuinely new to record. R
         }
       } else if (message.type === "result") {
         // Log memory flush cost (don't update main session - this is isolated)
+        const flushCost = (message as { total_cost_usd?: number }).total_cost_usd ?? 0;
         const usage = message.usage;
         if (usage) {
           const inputTokens = usage.input_tokens || 0;
@@ -232,6 +234,7 @@ Be efficient - only update files if there's something genuinely new to record. R
           const cacheRead = usage.cache_read_input_tokens || 0;
           const cacheHitRate = inputTokens > 0 ? ((cacheRead / inputTokens) * 100).toFixed(1) : "0";
           log("SDK", `Memory flush billing: ${inputTokens} input, ${outputTokens} output (${cacheHitRate}% cache)`);
+          recordCost("memory-flush", flushCost, inputTokens, outputTokens);
         }
       }
     }

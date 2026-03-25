@@ -12,6 +12,7 @@ import { getCurrentSessionId, getToolsServer } from "./turn-queue";
 import { loadSessionId } from "./session-manager";
 import { PROJECT_DIR } from "./paths";
 import { log, warn, error as logError } from "./log";
+import { recordCost } from "./cost-tracker";
 import { sendWithTypingSimulation } from "./typing";
 import { wrapExternalContent } from "./security";
 import { sanitizeResponse } from "./agent-types";
@@ -141,6 +142,7 @@ You have up to ${MAX_RESEARCH_TURNS} steps (tool calls) to complete this task. U
     }
 
     log("FOLLOWUP", `Done. Cost: $${totalCost.toFixed(4)} (${toolCalls} tool calls)`);
+    recordCost("followup", totalCost, 0, 0);
 
     // Strip reasoning tags and leaked internal text before considering a Discord post.
     // Followups often produce <think> blocks that must never reach Discord.

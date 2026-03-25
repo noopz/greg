@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { AGENT_DATA_DIR, PROJECT_DIR, localDate } from "./paths";
 import { log, error } from "./log";
+import { recordCost } from "./cost-tracker";
 import type { IdleBehavior } from "./skill-loader";
 import { loadIdleState } from "./idle-state";
 import { getEffectiveConfig } from "./config/runtime-config";
@@ -211,6 +212,7 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
 
     // Log cost summary
     log("IDLE", `Cost: $${totalCost.toFixed(4)} (${toolCalls} tool calls)`);
+    recordCost("idle-standalone", totalCost, 0, 0);
 
     return response.trim() || null;
   } catch (err) {
@@ -245,6 +247,7 @@ When done, briefly describe what you did or found.`;
   const cost = boundary.resultMessage
     ? (boundary.resultMessage as { total_cost_usd?: number }).total_cost_usd ?? 0 : 0;
   log("IDLE", `Cost: $${cost.toFixed(4)} (${boundary.toolInputs.length} tool calls)`);
+  recordCost("idle-session", cost, 0, 0);
 
   return {
     responseText: boundary.responseText.trim() || null,

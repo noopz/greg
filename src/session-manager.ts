@@ -15,6 +15,7 @@ import {
   type SessionData,
 } from "./persistence";
 import { log, warn } from "./log";
+import { recordCost } from "./cost-tracker";
 import type { SessionId } from "./agent-types";
 
 export const SESSION_FILE = path.join(AGENT_DATA_DIR, "session.json");
@@ -125,6 +126,18 @@ export async function updateTokenUsage(
   log("SDK", `Billing: ${turnInput} input + ${turnOutput} output (session total: ${cumulativeInput} in, ${cumulativeOutput} out)`);
   log("SDK", `Cache: ${cacheHitRate}% hit rate | Cost: $${turnCost.toFixed(4)} (session: $${cumulativeCost.toFixed(4)})${webSearches > 0 ? ` | Web searches: ${webSearches}` : ""}`);
   log("SDK", `Context size: ${previousSize} -> ${contextTokens} tokens`);
+
+  // Record to rolling cost tracker
+  recordCost("turn", turnCost, turnInput, turnOutput, contextTokens, parseFloat(cacheHitRate));
+
+  // Cost guardrails: warn on expensive turns or rapid context growth
+  if (turnCost > 0.30) {
+    warn("SDK", `HIGH TURN COST: $${turnCost.toFixed(4)} — check for cache misses or large tool output`);
+  }
+  const contextGrowth = contextTokens - previousSize;
+  if (contextGrowth > 50000) {
+    warn("SDK", `LARGE CONTEXT GROWTH: +${contextGrowth} tokens this turn (${previousSize} -> ${contextTokens})`);
+  }
 
   await saveSessionData({
     ...existing,

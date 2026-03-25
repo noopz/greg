@@ -337,8 +337,8 @@ briefly summarize what you did.`;
           }
 
           // Token watchdog: stop batch early if context is getting too large
-          if (inputTokens > 150_000) {
-            log("IDLE", `Context size exceeds 150k (${inputTokens} tokens), stopping batch early`);
+          if (inputTokens > 500_000) {
+            log("IDLE", `Context size exceeds 500k (${inputTokens} tokens), stopping batch early`);
             break;
           }
         } catch (err) {

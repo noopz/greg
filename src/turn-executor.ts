@@ -276,9 +276,9 @@ export async function executeTurn(
       } else if (activeSessionId) {
         const sessionData = await loadSessionData();
         const currentTokens = sessionData?.totalTokens ?? 0;
-        // ~150k tokens ≈ 75% of the 200k context window. Beyond this,
+        // ~750k tokens ≈ 75% of the 1M context window. Beyond this,
         // prompt assembly competes with conversation history for space.
-        if (currentTokens >= 150000) {
+        if (currentTokens >= 750000) {
           log("SDK", `[STREAMING] Token threshold reached (${currentTokens}) — will restart session`);
           session.close();
           setCurrentSessionId(undefined);
