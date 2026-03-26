@@ -326,7 +326,7 @@ export class StreamingSession {
    * the turn is killed (matches classic mode's stallInterval behavior).
    */
   waitForResponse(timeoutMs = 180_000): Promise<ResponseBoundary> {
-    const STALL_TIMEOUT_MS = 60_000; // 60s of silence = stall
+    const STALL_TIMEOUT_MS = 30_000; // 30s of silence = stall
 
     return new Promise<ResponseBoundary>((resolve, reject) => {
       this.pendingResolvers.push({ resolve, reject });
@@ -401,6 +401,11 @@ export class StreamingSession {
 
   get lastSessionId(): SessionId | undefined {
     return this._lastSessionId;
+  }
+
+  /** Get accumulated response text for the current in-progress turn (for stall salvage). */
+  get partialResponse(): string {
+    return this.currentResponse;
   }
 
   isAlive(): boolean {

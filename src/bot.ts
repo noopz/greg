@@ -23,8 +23,11 @@ import { channelId, userId, registerUser, resolveUser } from "./agent-types";
 import { isMessageCancelled, getCurrentSessionId } from "./turn-queue";
 import { indexBotResponse, setDmChannelId } from "./transcript-index";
 import { BOT_NAME, BOT_NAME_LOWER } from "./config/identity";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { STALENESS_SYSTEM_PROMPT, buildStalenessPrompt, parseStalenessResponse } from "./gates/staleness";
+import { recordCost } from "./cost-tracker";
 import { appendToTranscript, getTranscriptPath, appendJsonl, type TranscriptEntry } from "./persistence";
-import { TRANSCRIPTS_DIR, AGENT_DATA_DIR } from "./paths";
+import { PROJECT_DIR, TRANSCRIPTS_DIR, AGENT_DATA_DIR } from "./paths";
 import path from "node:path";
 
 import { consumeHypothesisReviewTrigger } from "./context-loader";
@@ -66,51 +69,91 @@ interface GateContext {
 }
 
 // ============================================================================
-// Stale Response Truncation
+// Staleness Check (Haiku)
 // ============================================================================
 
-export function truncateStaleResponse(
-  text: string,
-  elapsedMs: number,
-  newOtherMessages: number
-): string {
-  if (text.length <= 200) return text;
-  if (elapsedMs <= 15_000) return text;
-  if (newOtherMessages <= 2) return text;
+const STALENESS_GATE_TIMEOUT_MS = 5_000;
+const STALENESS_MIN_ELAPSED_MS = 15_000;
+const STALENESS_MIN_NEW_MESSAGES = 1;
 
-  const sentenceEnd = text.search(/[.!?](\s|$)/);
-  if (sentenceEnd !== -1) {
-    const cutPoint = sentenceEnd + 1;
-    if (cutPoint >= 30 && cutPoint <= 200) {
-      return text.slice(0, cutPoint);
-    }
-  }
-
-  const spaceIdx = text.lastIndexOf(" ", 200);
-  const cutPoint = spaceIdx > 0 ? spaceIdx : 200;
-  return text.slice(0, cutPoint);
-}
-
-async function detectStaleness(
+/**
+ * Check if a pending response is stale by asking Haiku whether the conversation
+ * moved on while we were processing. Returns true if the response should be dropped.
+ *
+ * Only triggers when: elapsed > 15s AND new messages from other users arrived.
+ * On any failure, defaults to SEND (never silently drops).
+ */
+async function shouldDropStaleResponse(
   message: Message,
-  client: Client
-): Promise<{ elapsedMs: number; newOtherMessages: number }> {
+  responseText: string,
+): Promise<boolean> {
   const elapsedMs = Date.now() - message.createdTimestamp;
+  if (elapsedMs <= STALENESS_MIN_ELAPSED_MS) return false;
+
+  // Fetch recent channel messages to see what happened while we were processing
+  let newerMessages: Array<{ author: string; content: string }>;
   try {
     const recent = await message.channel.messages.fetch({ limit: 10 });
-    const botId = client.user?.id;
-    const triggerUserId = message.author.id;
-    const newOtherMessages = [...recent.values()].filter(
-      (msg) =>
-        msg.createdTimestamp > message.createdTimestamp &&
-        msg.id !== message.id &&
-        msg.author.id !== botId &&
-        msg.author.id !== triggerUserId
-    ).length;
-    return { elapsedMs, newOtherMessages };
+    const botId = message.client.user?.id;
+    newerMessages = [...recent.values()]
+      .filter(
+        (msg) =>
+          msg.createdTimestamp > message.createdTimestamp &&
+          msg.id !== message.id &&
+          msg.author.id !== botId &&
+          msg.author.id !== message.author.id
+      )
+      .map((msg) => ({ author: msg.author.username, content: msg.content.substring(0, 200) }));
   } catch {
-    return { elapsedMs, newOtherMessages: 0 };
+    return false; // Can't fetch = don't drop
   }
+
+  if (newerMessages.length < STALENESS_MIN_NEW_MESSAGES) return false;
+
+  // Ask Haiku
+  const prompt = buildStalenessPrompt(
+    responseText,
+    { author: message.author.username, content: message.content },
+    newerMessages,
+    Math.floor(elapsedMs / 1000),
+  );
+
+  let haikuResponse = "";
+  const abortController = new AbortController();
+  const timer = setTimeout(() => abortController.abort(), STALENESS_GATE_TIMEOUT_MS);
+
+  try {
+    let staleCost = 0;
+    for await (const msg of query({
+      prompt,
+      options: {
+        cwd: PROJECT_DIR,
+        model: "haiku",
+        systemPrompt: STALENESS_SYSTEM_PROMPT,
+        allowedTools: [],
+        abortController,
+      },
+    })) {
+      if (msg.type === "assistant" && msg.message?.content) {
+        for (const block of msg.message.content) {
+          if ("text" in block) haikuResponse += block.text;
+        }
+      }
+      if (msg.type === "result") {
+        staleCost = (msg as { total_cost_usd?: number }).total_cost_usd ?? 0;
+      }
+    }
+    recordCost("staleness-gate", staleCost, 0, 0);
+  } catch (err) {
+    warn("STALE", `Haiku staleness check failed (${err instanceof Error ? err.message : String(err)}), defaulting to SEND`);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const shouldSend = parseStalenessResponse(haikuResponse);
+  log("STALE", `Haiku: ${shouldSend ? "SEND" : "DROP"} (${Math.floor(elapsedMs / 1000)}s old, ${newerMessages.length} new messages) for "${responseText.substring(0, 80)}..."`);
+  return !shouldSend;
 }
 
 // ============================================================================
@@ -520,15 +563,14 @@ async function deliverResponse(
     case "response": {
       let responseText = result.text;
 
-      if (result.toolNamesUsed.size === 0 && responseText.length > 200) {
-        const { elapsedMs, newOtherMessages } = await detectStaleness(message, message.client);
-        const truncated = truncateStaleResponse(responseText, elapsedMs, newOtherMessages);
-        if (truncated.length < responseText.length) {
-          log(
-            "SEND",
-            `Truncated stale response from ${responseText.length} to ${truncated.length} chars (elapsed ${(elapsedMs / 1000).toFixed(1)}s, ${newOtherMessages} new messages)`
-          );
-          responseText = truncated;
+      // If the model didn't use tools (pure text response), check if the
+      // conversation moved on while we were processing. Tool-using responses
+      // (file writes, searches) have side effects worth keeping even if stale.
+      if (result.toolNamesUsed.size === 0) {
+        const shouldDrop = await shouldDropStaleResponse(message, responseText);
+        if (shouldDrop) {
+          log("SEND", `msg=${triggerMsgId} → dropped: stale response (conversation moved on)`);
+          return;
         }
       }
 

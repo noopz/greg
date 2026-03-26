@@ -458,12 +458,34 @@ export async function executeTurn(
   } catch (err) {
     logError("SDK", `[STREAMING] Turn execution failed after ${((Date.now() - yieldStart) / 1000).toFixed(1)}s`, err);
 
+    // Salvage partial response on stall — if the model already produced usable text
+    // before the SDK went silent, send it rather than wasting the work.
+    const isStall = err instanceof Error && /SDK stalled/.test(err.message);
+    const partial = session.partialResponse;
+    if (isStall && partial.length > 30) {
+      const sanitized = sanitizeResponse(partial.trim());
+      if (sanitized) {
+        log("SDK", `[STREAMING] Salvaged ${sanitized.length} chars of partial response from stalled turn`);
+        // Close and clear session — don't resume a stalled session
+        session.close();
+        setCurrentSessionId(undefined);
+        resetSessionSnapshot();
+        return { kind: "response", text: sanitized, toolNamesUsed: new Set<string>() };
+      }
+    }
+
     // Close the session on any failure — prevents zombie sessions
     if (session.isAlive()) {
       log("SDK", `[STREAMING] Closing session after error (was alive but stuck)`);
       session.close();
     } else {
       log("SDK", `[STREAMING] Session already dead — will restart on next turn`);
+    }
+
+    // On stall, don't resume the same session — start fresh
+    if (isStall) {
+      setCurrentSessionId(undefined);
+      resetSessionSnapshot();
     }
 
     return { kind: "error", error: err instanceof Error ? err : new Error(String(err)) };
