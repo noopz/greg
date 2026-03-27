@@ -6,7 +6,7 @@
  * breaking the bot ↔ idle ↔ custom-tools cycle.
  */
 
-import { Client } from "discord.js-selfbot-v13";
+import type { Client } from "./discord";
 import type { ChannelId, UserId } from "./agent-types";
 
 // ============================================================================

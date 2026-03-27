@@ -1,4 +1,5 @@
-import { Message, Client } from "discord.js-selfbot-v13";
+import type { Message, Client } from "./discord";
+import { isChannelGroupDM, getChannelTypeLabel, getGroupDmRecipients } from "./discord";
 import sharp from "sharp";
 import { wrapExternalContent } from "./security";
 import { log, warn } from "./log";
@@ -17,19 +18,7 @@ const MAX_IMAGE_DIMENSION = 1568;
 // Discord Context Formatting
 // ============================================================================
 
-const channelTypeMap: Record<string, string> = {
-  DM: "DM",
-  GROUP_DM: "Group DM",
-  GUILD_TEXT: "Guild Text",
-  GUILD_VOICE: "Guild Voice",
-  GUILD_CATEGORY: "Guild Category",
-  GUILD_NEWS: "Guild News",
-  GUILD_STORE: "Guild Store",
-  GUILD_NEWS_THREAD: "Guild News Thread",
-  GUILD_PUBLIC_THREAD: "Guild Public Thread",
-  GUILD_PRIVATE_THREAD: "Guild Private Thread",
-  GUILD_STAGE_VOICE: "Guild Stage Voice",
-};
+// Channel type map moved to src/discord.ts — use getChannelTypeLabel()
 
 /**
  * Formats Discord context for the agent, including recent messages and channel info.
@@ -167,8 +156,7 @@ export async function formatDiscordContext(
 
   const formattedMessagesStr = formattedMessages.join("\n");
 
-  // Get channel type as string (channel.type is a string like "DM", "GROUP_DM", etc.)
-  const channelTypeStr = channelTypeMap[channel.type] || "Unknown";
+  const channelTypeStr = getChannelTypeLabel(channel);
 
   // Build context string
   let context = `=== Channel Info ===
@@ -178,14 +166,12 @@ Timestamp: ${new Date().toLocaleString()}
 `;
 
   // For Group DM, list participants
-  if (channel.type === "GROUP_DM" && "recipients" in channel) {
-    const recipients = (channel as any).recipients;
-    if (recipients) {
-      const participantList = recipients
-        .map((user: any) => `  - ${user.username}@${user.id}`)
-        .join("\n");
-      context += `\nParticipants:\n${participantList}\n`;
-    }
+  const recipients = getGroupDmRecipients(channel);
+  if (recipients.length > 0) {
+    const participantList = recipients
+      .map((user) => `  - ${user.username}@${user.id}`)
+      .join("\n");
+    context += `\nParticipants:\n${participantList}\n`;
   }
 
   // Add current message details

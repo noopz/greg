@@ -1,4 +1,5 @@
-import { Client, Message, Typing, MessageReaction, User } from "discord.js-selfbot-v13";
+import type { Client, Message, Typing, MessageReaction, User } from "./discord";
+import { isChannelDM, isChannelGroupDM, getGroupDmRecipients } from "./discord";
 import { formatDiscordContext, buildMessageContentBlocks } from "./discord-formatting";
 import { processWithAgent, getStreamingSession } from "./agent";
 import { resetIdleTimer } from "./idle";
@@ -254,10 +255,8 @@ async function validateChannel(
   registerKnownUser(msgChannelId, message.author.username, msgUserId);
 
   // One-time population of name pool for group DMs
-  if (message.channel.type === "GROUP_DM" && "recipients" in message.channel) {
-    for (const user of (message.channel as any).recipients) {
-      if (user.username) registerKnownUser(msgChannelId, user.username, userId(user.id));
-    }
+  for (const user of getGroupDmRecipients(message.channel)) {
+    if (user.username) registerKnownUser(msgChannelId, user.username, userId(user.id));
   }
 
   detectReferences(msgChannelId, message.content);
@@ -292,7 +291,7 @@ async function validateChannel(
   log("MSG", `From ${message.author.username} (${msgUserId}): "${message.content}"`);
 
   const isAllowedChannel = config.channelIds.has(msgChannelId);
-  const isCreatorDm = message.channel.type === "DM" && msgUserId === config.creatorId;
+  const isCreatorDm = isChannelDM(message.channel) && msgUserId === config.creatorId;
   const isDirectMention = message.mentions.has(client.user!.id);
   const isNameMentioned = message.content.toLowerCase().includes(BOT_NAME_LOWER);
 
@@ -695,7 +694,7 @@ export function handleTypingStart(typing: Typing, config: BotConfig): void {
   }
 
   const isAllowedChannel = config.channelIds.has(typingChannelId);
-  const isCreatorDm = typing.channel.type === "DM" && typingUserId === config.creatorId;
+  const isCreatorDm = isChannelDM(typing.channel) && typingUserId === config.creatorId;
 
   if (isAllowedChannel || isCreatorDm) {
     recordTypingStart(typingUserId, typingChannelId);

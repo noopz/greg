@@ -17,7 +17,7 @@ import { sendWithTypingSimulation } from "./typing";
 import { wrapExternalContent } from "./security";
 import { sanitizeResponse } from "./agent-types";
 import { getLocalToolNames } from "./local-config";
-import type { TextBasedChannel } from "discord.js-selfbot-v13";
+import type { TextBasedChannel } from "./discord";
 
 const FOLLOWUP_TIMEOUT_MS = 90_000; // 90 second max
 

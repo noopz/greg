@@ -1,4 +1,5 @@
-import { Client, Message } from "discord.js-selfbot-v13";
+import type { Message } from "./discord";
+import { createClient, isChannelDM, isChannelGroupDM, setOfflinePresence } from "./discord";
 import { handleReady, handleMessage, handleTypingStart, handleReaction, Config } from "./bot";
 import { startIdleLoop, stopIdleLoop, IdleConfig } from "./idle";
 import { startAuditWatcher, stopAuditWatcher } from "./audit";
@@ -98,7 +99,7 @@ const config: Config = {
 };
 
 // Create Discord client
-const client = new Client();
+const client = createClient();
 
 // Set up event handlers
 client.on("ready", async () => {
@@ -114,9 +115,9 @@ client.on("ready", async () => {
       if (channel) {
         const type = channel.type;
         log("CONFIG", `Channel ${id}: type=${type}`);
-        if (type === "GROUP_DM" && !channelAliases["group"]) {
+        if (isChannelGroupDM(channel) && !channelAliases["group"]) {
           channelAliases["group"] = id;
-        } else if (type === "DM" && !channelAliases["dm"]) {
+        } else if (isChannelDM(channel) && !channelAliases["dm"]) {
           channelAliases["dm"] = id;
         }
       }
@@ -240,12 +241,10 @@ async function gracefulShutdown(signal: string) {
 
   // Set status to invisible so Greg appears offline
   try {
-    if (client.user) {
-      client.user.setPresence({ status: "invisible" });
-      log("SHUTDOWN", "Set status to invisible");
-      // Give Discord a moment to send the status change over websocket
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    setOfflinePresence(client);
+    log("SHUTDOWN", "Set status to offline");
+    // Give Discord a moment to send the status change over websocket
+    await new Promise(resolve => setTimeout(resolve, 1000));
   } catch (err) {
     // Ignore errors setting status on shutdown
   }

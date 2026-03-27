@@ -12,7 +12,8 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Client, TextChannel } from "discord.js-selfbot-v13";
+import type { Client, TextChannel } from "./discord";
+import { isChannelGuildText } from "./discord";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { type BotConfig } from "./bot-types";

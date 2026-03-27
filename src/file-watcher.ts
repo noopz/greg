@@ -5,7 +5,7 @@
  * Used by the audit system to watch skills, agents, relationships, impressions, and patterns.
  */
 
-import { Client } from "discord.js-selfbot-v13";
+import type { Client } from "./discord";
 import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";

@@ -15,7 +15,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Client } from "discord.js-selfbot-v13";
+import type { Client } from "./discord";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { BotConfig, dmCreator } from "./bot-types";
 import { isAgentBusy } from "./agent";

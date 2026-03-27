@@ -9,7 +9,7 @@
  * - agent-data/learned-patterns.md - significant pattern updates
  */
 
-import { Client } from "discord.js-selfbot-v13";
+import type { Client } from "./discord";
 import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";

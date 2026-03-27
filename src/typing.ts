@@ -1,4 +1,5 @@
-import { Message, MessageFlags, TextBasedChannel } from "discord.js-selfbot-v13";
+import type { Message, TextBasedChannel } from "./discord";
+import { getSuppressEmbedsFlag } from "./discord";
 import { log } from "./log";
 import type { ChannelId, UserId } from "./agent-types";
 import { resolveUser } from "./agent-types";
@@ -247,7 +248,7 @@ export async function sendWithTypingSimulation(
     // Send the chunk (first chunk as reply if replyToMessage provided)
     // Suppress link previews when chunk contains multiple URLs to reduce clutter
     const suppressEmbeds = countUrls(chunk) > 1;
-    const payload = suppressEmbeds ? { content: chunk, flags: MessageFlags.FLAGS.SUPPRESS_EMBEDS } : chunk;
+    const payload = suppressEmbeds ? { content: chunk, flags: getSuppressEmbedsFlag() } : chunk;
 
     log("SEND", `>>> CALLING channel.send() for chunk ${i + 1}${suppressEmbeds ? ' (embeds suppressed)' : ''}`);
     let sentMsg;
