@@ -2,9 +2,13 @@
 
 A self-learning Discord bot built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk). Greg lives in your group chat as a persistent personality — he remembers conversations, forms opinions, learns behavioral patterns, and develops relationships with individual users over time.
 
-This is a **selfbot** (runs as a user account, not a bot account). It uses `discord.js-selfbot-v13` to connect to Discord.
+Supports two Discord client modes:
+- **Selfbot mode** (default) — runs as a user account via `discord.js-selfbot-v13`, lives in group DMs
+- **Bot mode** — runs as an official bot account via `discord.js` v14, lives in guild servers
 
-> **Disclaimer:** This project is provided for **educational and research purposes only**. Selfbots violate Discord's Terms of Service. I am not responsible for any Discord accounts that are suspended or banned as a result of using this software. No support is provided. Use entirely at your own risk.
+Set `DISCORD_CLIENT_MODE=selfbot` or `DISCORD_CLIENT_MODE=bot` in your `.env`.
+
+> **Disclaimer:** This project is provided for **educational and research purposes only**. Selfbot mode violates Discord's Terms of Service. I am not responsible for any Discord accounts that are suspended or banned as a result of using this software. No support is provided. Use entirely at your own risk.
 
 ## What makes it different
 
@@ -54,13 +58,24 @@ bun run start        # Production
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DISCORD_TOKEN` | Yes | Discord user token (DevTools → Network → Authorization header) |
+| `DISCORD_TOKEN` | Yes | Selfbot: user token (DevTools → Authorization header). Bot: bot token from Developer Portal. |
+| `DISCORD_CLIENT_MODE` | No | `selfbot` (default) or `bot` |
 | `CREATOR_USER_ID` | Yes | Your Discord user ID (right-click → Copy User ID) |
-| `CHANNEL_IDS` | Yes | Comma-separated Discord channel IDs to watch (from URL) |
+| `CHANNEL_IDS` | Yes | Comma-separated Discord channel IDs to watch |
 | `BOT_NAME` | No | Display name (default: "Greg") |
 | `KLIPY_API_KEY` | No | GIF search via [Klipy](https://partner.klipy.com/api-keys) (free) |
 | `ENABLE_IMAGES` | No | Set to "1" to enable image vision |
 | `LOG_TO_FILE` | No | File logging (default: true) |
+
+### Bot mode setup
+
+If using `DISCORD_CLIENT_MODE=bot`, you need to:
+
+1. Create a Discord Application at [discord.com/developers](https://discord.com/developers)
+2. Enable the **MESSAGE_CONTENT** privileged intent in Bot settings (without this, `message.content` is silently empty)
+3. Generate a bot token and set it as `DISCORD_TOKEN`
+4. Invite the bot to your server with permissions: View Channels, Send Messages, Read Message History, Add Reactions
+5. Your `CHANNEL_IDS` should be guild text channel IDs (not group DM IDs)
 
 ### Initial persona
 
