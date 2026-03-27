@@ -22,22 +22,9 @@ import { BOT_NAME } from "./config/identity";
 // Track if a memory flush is currently running (to avoid starting multiple)
 let memoryFlushInProgress = false;
 
-// After a successful memory flush, start a fresh session to avoid SDK auto-compaction delay
-let shouldStartFreshSession = false;
-
 // Constants
-const SOFT_THRESHOLD_TOKENS = 400000; // 400k tokens - trigger memory flush (~40% of 1M context window)
+const SOFT_THRESHOLD_TOKENS = 400000; // 400k tokens - snapshot memories to disk
 const MEMORY_FLUSH_BUFFER = 30000; // Minimum tokens to accumulate before re-triggering flush
-
-/** Check if a fresh session should be started (set after memory flush completes) */
-export function getShouldStartFreshSession(): boolean {
-  return shouldStartFreshSession;
-}
-
-/** Clear the fresh session flag (called when a fresh session is actually started) */
-export function clearShouldStartFreshSession(): void {
-  shouldStartFreshSession = false;
-}
 
 /**
  * Read recent entries from a transcript file for memory flush context.
@@ -246,10 +233,9 @@ Be efficient - only update files if there's something genuinely new to record. R
       log("SDK", "Memory flush complete: memories saved");
     }
 
-    // Signal that the next turn should start a fresh session instead of resuming
-    // This avoids the ~30s SDK auto-compaction delay that would happen if context keeps growing
-    shouldStartFreshSession = true;
-    log("SDK", "Will start fresh session on next turn (avoiding compaction delay)");
+    // Memory flush no longer triggers a fresh session — the session continues
+    // until the hard restart threshold (700k). Flush just snapshots memories to disk.
+    log("SDK", "Memory flush complete — session continues (restart at 700k tokens)");
 
     // Append memory flush to transcript
     const transcriptFile = getTranscriptPath(TRANSCRIPTS_DIR, sessionData.sessionId);

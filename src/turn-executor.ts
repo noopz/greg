@@ -33,10 +33,6 @@ import {
   clearPersistedSession,
 } from "./session-manager";
 import {
-  getShouldStartFreshSession,
-  clearShouldStartFreshSession,
-} from "./memory-flush";
-import {
   getCurrentSessionId,
   setCurrentSessionId,
   getToolsServer,
@@ -183,7 +179,7 @@ export async function executeTurn(
       allowedTools,
       ...(accessHooks ? { hooks: accessHooks } : {}),
       mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
-      maxBudgetUsd: 1.0, // Cap runaway agentic loops (web research binges, etc.)
+      maxBudgetUsd: 20.0, // Session-lifetime cap (safety net, not per-turn)
       resumeSessionId: resumeId,
       env: {
         KLIPY_API_KEY: process.env.KLIPY_API_KEY,
@@ -272,19 +268,12 @@ export async function executeTurn(
     }
 
     try {
-      if (getShouldStartFreshSession()) {
-        log("SDK", "[STREAMING] Memory flush requested fresh session — will restart");
-        session.close();
-        setCurrentSessionId(undefined);
-        clearShouldStartFreshSession();
-        resetSessionSnapshot();
-        rollHypothesisInclusion();
-      } else if (activeSessionId) {
+      if (activeSessionId) {
         const sessionData = await loadSessionData();
         const currentTokens = sessionData?.totalTokens ?? 0;
-        // ~750k tokens ≈ 75% of the 1M context window. Beyond this,
-        // prompt assembly competes with conversation history for space.
-        if (currentTokens >= 750000) {
+        // Hard restart at 700k: memory flush snapshots at 400k but session
+        // continues for better continuity. Restart at 700k before context pressure.
+        if (currentTokens >= 700000) {
           log("SDK", `[STREAMING] Token threshold reached (${currentTokens}) — will restart session`);
           session.close();
           setCurrentSessionId(undefined);
