@@ -408,6 +408,11 @@ export class StreamingSession {
     return this.currentResponse;
   }
 
+  /** Clear the last session ID so stall recovery doesn't resume a broken session. */
+  clearLastSessionId(): void {
+    this._lastSessionId = undefined;
+  }
+
   isAlive(): boolean {
     return this._alive;
   }

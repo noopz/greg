@@ -30,6 +30,7 @@ import {
   loadSessionId,
   saveSessionId,
   updateTokenUsage,
+  clearPersistedSession,
 } from "./session-manager";
 import {
   getShouldStartFreshSession,
@@ -182,6 +183,7 @@ export async function executeTurn(
       allowedTools,
       ...(accessHooks ? { hooks: accessHooks } : {}),
       mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
+      maxBudgetUsd: 1.0, // Cap runaway agentic loops (web research binges, etc.)
       resumeSessionId: resumeId,
       env: {
         KLIPY_API_KEY: process.env.KLIPY_API_KEY,
@@ -222,6 +224,10 @@ export async function executeTurn(
     resultMessage = boundary.resultMessage;
 
     log("SDK", `[STREAMING] Response received msg=${msgId} in ${responseTime}s. Length: ${response.length}, tools: [${[...toolNamesUsed].join(", ")}]`);
+
+    if (resultMessage?.subtype === "error_max_budget_usd") {
+      warn("SDK", `[STREAMING] Turn hit budget cap ($1.00) — returning partial response`);
+    }
 
     // On first turn: capture session ID now that init has been received
     if (isNewSession && session.sessionId) {
@@ -466,9 +472,11 @@ export async function executeTurn(
       const sanitized = sanitizeResponse(partial.trim());
       if (sanitized) {
         log("SDK", `[STREAMING] Salvaged ${sanitized.length} chars of partial response from stalled turn`);
-        // Close and clear session — don't resume a stalled session
+        // Nuke all session state — in-memory, on-disk, and streaming session
         session.close();
+        session.clearLastSessionId();
         setCurrentSessionId(undefined);
+        clearPersistedSession();
         resetSessionSnapshot();
         return { kind: "response", text: sanitized, toolNamesUsed: new Set<string>() };
       }
@@ -482,9 +490,11 @@ export async function executeTurn(
       log("SDK", `[STREAMING] Session already dead — will restart on next turn`);
     }
 
-    // On stall, don't resume the same session — start fresh
+    // On stall, nuke all session state so retries start completely fresh
     if (isStall) {
+      session.clearLastSessionId();
       setCurrentSessionId(undefined);
+      clearPersistedSession();
       resetSessionSnapshot();
     }
 

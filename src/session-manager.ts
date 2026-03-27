@@ -6,6 +6,7 @@
  */
 
 import path from "node:path";
+import fs from "node:fs";
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AGENT_DATA_DIR, TRANSCRIPTS_DIR } from "./paths";
 import {
@@ -62,6 +63,18 @@ export async function saveSessionId(sessionId: SessionId): Promise<void> {
     updatedAt: Date.now(),
     transcriptFile,
   });
+}
+
+/**
+ * Clear the persisted session file so stall recovery doesn't resume a broken session.
+ */
+export function clearPersistedSession(): void {
+  try {
+    fs.unlinkSync(SESSION_FILE);
+    log("SDK", "Cleared persisted session file");
+  } catch {
+    // File didn't exist — that's fine
+  }
 }
 
 /**
