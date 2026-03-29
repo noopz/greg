@@ -15,6 +15,7 @@ import {
 } from "./persistence";
 import { log, warn, error as logError } from "./log";
 import { recordCost } from "./cost-tracker";
+import { getHooks } from "./extensions/loader";
 import { loadSessionData, saveSessionData } from "./session-manager";
 import type { SessionId } from "./agent-types";
 import { BOT_NAME } from "./config/identity";
@@ -158,7 +159,11 @@ export async function executeMemoryFlush(): Promise<void> {
 
   // Get recent conversation summary (NOT resuming session - much cheaper!)
   const recentConversation = await getRecentTranscriptSummary(sessionData.sessionId, 30);
-  const memoryFlushPrompt = MEMORY_FLUSH_PROMPT_TEMPLATE(recentConversation);
+  // Extension: allow overriding the memory flush prompt
+  const extFlushPrompt = await getHooks().memoryFlush(recentConversation, {
+    channelId: "", userId: "", isCreator: true, isGroupDm: false,
+  });
+  const memoryFlushPrompt = extFlushPrompt ?? MEMORY_FLUSH_PROMPT_TEMPLATE(recentConversation);
 
   // Build minimal context for memory flush
   const today = localDate();

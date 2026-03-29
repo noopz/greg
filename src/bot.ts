@@ -27,6 +27,7 @@ import { BOT_NAME, BOT_NAME_LOWER } from "./config/identity";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { STALENESS_SYSTEM_PROMPT, buildStalenessPrompt, parseStalenessResponse } from "./gates/staleness";
 import { recordCost } from "./cost-tracker";
+import { getHooks } from "./extensions/loader";
 import { appendToTranscript, getTranscriptPath, appendJsonl, type TranscriptEntry } from "./persistence";
 import { PROJECT_DIR, TRANSCRIPTS_DIR, AGENT_DATA_DIR } from "./paths";
 import path from "node:path";
@@ -478,7 +479,7 @@ async function executePipeline(
 
   await deliverResponse(
     message, result, msgChannelId, msgUserId,
-    validation.isReplyToBot, opts.mustRespond
+    validation.isReplyToBot, opts.mustRespond, isCreator
   );
 
   // Trigger background hypothesis review if the roll succeeded this session.
@@ -549,7 +550,8 @@ async function deliverResponse(
   msgChannelId: ChannelId,
   msgUserId: UserId,
   isReplyToBot: boolean,
-  mustRespond: boolean
+  mustRespond: boolean,
+  isCreator = false,
 ): Promise<void> {
   const triggerMsgId = message.id;
 
@@ -572,6 +574,18 @@ async function deliverResponse(
           return;
         }
       }
+
+      // Extension postResponse pipeline (transform/suppress)
+      const envelope = await getHooks().postResponse({
+        text: responseText, suppress: false,
+        channelId: String(msgChannelId), userId: String(msgUserId),
+        isCreator,
+      });
+      if (envelope.suppress) {
+        log("EXT", `msg=${triggerMsgId} → suppressed by postResponse extension`);
+        return;
+      }
+      responseText = envelope.text;
 
       log(
         "SEND",
@@ -665,11 +679,21 @@ export async function handleMessage(
     userId: msgUserId,
   };
 
-  const gateResult = await shouldRespondViaGate(gateInput);
-  if (!gateResult) return;
+  // Extension gate runs before Haiku gate (free — saves gate cost if extension has an opinion)
+  const extGate = await getHooks().shouldRespond(gateInput);
+  if (extGate === false) { log("GATE", "Extension gate: NO"); return; }
+
+  // Skip Haiku gate if extension already said YES
+  if (extGate !== true) {
+    const gateResult = await shouldRespondViaGate(gateInput);
+    if (!gateResult) return;
+  } else {
+    log("GATE", "Extension gate: YES — skipping Haiku gate");
+  }
 
   // Step 4: Compute pipeline options from validation + convo signals
   const mustRespond =
+    extGate === true ||
     validation.isDirectMention || validation.isNameMentioned || validation.isReplyToBot ||
     convoConfidence === "high";
   log("MSG", `mustRespond=${mustRespond}`);
@@ -757,6 +781,12 @@ export async function handleReaction(
     };
 
     await appendJsonl(REACTION_FEEDBACK_FILE, entry);
+
+    // Extension: notify reaction handlers for feedback tracking
+    await getHooks().onReaction({
+      emoji, userId: reactingUser.id,
+      messageText: msg.content ?? "", channelId: String(msgChannelId),
+    });
 
     // Append reaction to the active transcript so Greg can see feedback
     // when reading transcripts during idle skills (conversation-logging,

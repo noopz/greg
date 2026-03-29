@@ -13,6 +13,7 @@ import { loadSessionId } from "./session-manager";
 import { PROJECT_DIR } from "./paths";
 import { log, warn, error as logError } from "./log";
 import { recordCost } from "./cost-tracker";
+import { buildAccessControlHooks } from "./access-control";
 import { sendWithTypingSimulation } from "./typing";
 import { wrapExternalContent } from "./security";
 import { sanitizeResponse } from "./agent-types";
@@ -40,6 +41,7 @@ export async function executeFollowup(
   channel: TextBasedChannel
 ): Promise<void> {
   // Get session to fork from (before try so early return doesn't underflow counter)
+  const accessHooks = buildAccessControlHooks(true); // creator-level read restrictions
   let sessionId = getCurrentSessionId();
   if (!sessionId) {
     sessionId = await loadSessionId();
@@ -98,6 +100,7 @@ You have up to ${MAX_RESEARCH_TURNS} steps (tool calls) to complete this task. U
               ...getLocalToolNames("creator"),
             ],
             mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
+            ...(accessHooks ? { hooks: accessHooks } : {}),
           },
         })) {
           if (message.type === "assistant" && message.message?.content) {

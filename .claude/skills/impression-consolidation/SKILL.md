@@ -1,15 +1,12 @@
 ---
 name: impression-consolidation
-description: Consolidate and maintain impressions, applying weight decay and removing redundant entries
+description: Consolidates impression files by applying weight decay, removing redundant entries, and enforcing per-user limits. Maintains relationship file summaries.
+allowed-tools: Read, Write, Bash
 ---
 
 # Impression Consolidation
 
 Periodic maintenance of impression files in `agent-data/impressions/` to keep observations meaningful and manageable.
-
-## Allowed Tools
-
-Read, Write, Bash
 
 ## When to Run
 

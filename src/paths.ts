@@ -15,6 +15,7 @@ export const IMPRESSIONS_DIR = path.join(AGENT_DATA_DIR, "impressions");
 export const SKILLS_DIR = path.join(PROJECT_DIR, ".claude", "skills");
 export const LOCAL_SKILLS_DIR = path.join(PROJECT_DIR, "local", "skills");
 export const AGENTS_DIR = path.join(PROJECT_DIR, ".claude", "agents");
+export const EXTENSIONS_DIR = path.join(PROJECT_DIR, "local", "extensions");
 export const LOGS_DIR = path.join(PROJECT_DIR, "logs");
 
 /** Sanitize a user ID for use as a filename component. */

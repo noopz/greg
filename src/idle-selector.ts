@@ -7,6 +7,7 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { log, warn, error } from "./log";
+import { getHooks } from "./extensions/loader";
 import { loadIdleState } from "./idle-state";
 import { PROJECT_DIR } from "./paths";
 import type { IdleBehavior } from "./skill-loader";
@@ -24,6 +25,20 @@ import { IDLE_SELECTOR_SYSTEM_PROMPT, buildIdleChoicePrompt, parseIdleChoice } f
  * what he wants to do. This is cheap (~500 tokens) and maintains agency.
  */
 export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[], idleMinutes: number, preconditions?: PreconditionData): Promise<IdleBehavior[]> {
+  // Extension: allow overriding idle behavior selection
+  const extChoice = await getHooks().selectIdleBehavior(
+    eligibleBehaviors.map(b => b.name),
+    { channelId: "", userId: "", isCreator: true, isGroupDm: false },
+  );
+  if (extChoice) {
+    const match = eligibleBehaviors.find(b => b.name === extChoice);
+    if (match) {
+      log("IDLE", `Extension selected: ${match.name}`);
+      return [match];
+    }
+    warn("IDLE", `Extension selected unknown behavior: ${extChoice}, falling back to Haiku`);
+  }
+
   // Load state to show last run times
   const state = await loadIdleState();
 

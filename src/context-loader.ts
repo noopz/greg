@@ -18,6 +18,7 @@ import {
 import { loadImpressions } from "./impressions";
 import { log } from "./log";
 import { BOT_NAME } from "./config/identity";
+import { getHooks } from "./extensions/loader";
 
 // ============================================================================
 // Session Mtime Tracking (deduplication of unchanged context)
@@ -401,8 +402,10 @@ async function discoverSkills(): Promise<string> {
 
       if (whenToUseMatch) {
         const whenToUse = whenToUseMatch[1].trim().slice(0, 200);
-        const toolsMatch = content.match(/^## Allowed Tools\s*\n(.+)$/m);
-        const tools = toolsMatch?.[1]?.trim() ?? "";
+        // Read allowed-tools from frontmatter (preferred) or markdown section (fallback)
+        const fmTools = frontmatter?.[1].match(/^allowed-tools:\s*(.+)$/m)?.[1]?.trim();
+        const sectionTools = content.match(/^## Allowed Tools\s*\n(.+)$/m)?.[1]?.trim();
+        const tools = fmTools ?? sectionTools ?? "";
         chatSkills.push(`- **${name}**: ${description}. Use when: ${whenToUse}${tools ? `. Tools: ${tools}` : ""}`);
       } else {
         // Idle-only: extract cooldown
@@ -553,6 +556,7 @@ You can improve yourself by writing to files. Changes take effect on your next r
 4. **Relationships**: Write to agent-data/relationships/<user-id>.md where user-id is the numeric Discord ID (from channel participants or message author). Example: agent-data/relationships/123456789012345678.md
 5. **Response Triggers**: Edit agent-data/response-triggers.json to add new topics/games you want to engage with
 6. **Custom Subagents**: Create .claude/agents/<agent-name>.md for specialized helpers (see below)
+7. **Extensions**: Create local/extensions/<name>.ts to add custom hooks (gate overrides, context injection, response transforms). Read EXTENSIONS.md for the full API before creating one.
 
 ## SELF-CONFIGURATION
 You can edit agent-data/runtime-config.json to adjust your own behavior settings.
@@ -563,6 +567,8 @@ Available settings:
 - **idle.thresholdMinutes**: How long before triggering idle behavior
 - **skills.disabled**: Array of skill names to disable (e.g., ["some-skill"])
 - **keywords**: Array of additional words that trigger responses (e.g., ["gaming", "code"])
+
+**Skill scheduling:** To pause a skill temporarily, edit its SKILL.md \`Cooldown:\` line to a longer value. The skill loader hot-reloads every idle cycle. When the pause should end, edit it back. This is how you handle dead zones — increase the cooldown, don't waste tokens running a skill that has nothing to do.
 
 Important notes:
 - All settings have operator-defined limits - values outside these limits will be clamped
@@ -667,7 +673,7 @@ Your custom agents in .claude/agents/ are automatically available via Task tool.
 
 `;
 
-  return `${staticInstructions}${continuationReminder}${patterns !== null ? `## PATTERNS YOU'VE LEARNED
+  let context = `${staticInstructions}${continuationReminder}${patterns !== null ? `## PATTERNS YOU'VE LEARNED
 ${patterns}
 ` : ""}${relationshipsBlock !== null ? `${relationshipsBlock}
 ` : ""}${impressionsBlock !== null ? `
@@ -688,6 +694,28 @@ ${discordContext}
 ${process.cwd()}
 All file tool calls must use absolute paths rooted here (e.g. ${process.cwd()}/agent-data/memories/${today}.md).
 `;
+
+  // Extension: inject custom context sections
+  const extSections = await getHooks().contextSections({
+    channelId: discordContext.match(/Channel ID: (\d+)/)?.[1] ?? "",
+    userId: userIds[0] ?? "",
+    isCreator: true,
+    isGroupDm: false,
+  });
+  for (const section of extSections) {
+    context += `\n${section.heading}\n${section.body}\n`;
+  }
+
+  // Extension: filter/transform the assembled context (remove sections, reorder, truncate)
+  const extCtx = {
+    channelId: discordContext.match(/Channel ID: (\d+)/)?.[1] ?? "",
+    userId: userIds[0] ?? "",
+    isCreator: true,
+    isGroupDm: false,
+  };
+  context = await getHooks().contextFilter(context, extCtx);
+
+  return context;
 }
 
 // Note: buildContextDelta was removed — streaming continuation turns now use

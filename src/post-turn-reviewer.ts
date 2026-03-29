@@ -23,6 +23,7 @@ import { AGENT_DATA_DIR, PROJECT_DIR } from "./paths";
 import { loadFileWithCache } from "./context-cache";
 import { log, warn } from "./log";
 import type { ChannelId, MissedAction } from "./agent-types";
+import { getHooks } from "./extensions/loader";
 
 // ============================================================================
 // Types
@@ -222,8 +223,14 @@ export async function reviewTurn(input: ReviewInput): Promise<MissedAction[]> {
 
     const { toolList, hintsSection } = loadToolSummary();
     const failureModes = loadFailureModes();
+    // Extension: inject additional review criteria
+    const extCriteria = await getHooks().reviewCriteria(
+      [...input.toolNamesUsed], input.responseText,
+      { channelId: input.channelId ?? "", userId: "", isCreator: true, isGroupDm: input.isGroupDm },
+    );
+    const extSection = extCriteria ? `\n\n## Extension Review Rules\n${extCriteria}` : "";
     const suffix = buildSystemPromptSuffix(hintsSection, failureModes, input.isGroupDm);
-    const systemPrompt = `${REVIEWER_SYSTEM_PROMPT_PREFIX}${toolList}${suffix}`;
+    const systemPrompt = `${REVIEWER_SYSTEM_PROMPT_PREFIX}${toolList}${suffix}${extSection}`;
 
     // Normalize MCP tool names (mcp__custom-tools__search_gif → search_gif)
     // so the reviewer prompt and already-used filter match what Haiku outputs.

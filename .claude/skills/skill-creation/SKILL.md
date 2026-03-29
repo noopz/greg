@@ -1,139 +1,55 @@
 ---
 name: skill-creation
-description: Reference guide for creating and editing skills. Read this BEFORE creating any new skill.
+description: Reference for creating and editing skills. Covers format, naming, frontmatter, progressive disclosure, idle registration, and dead zone handling. Read before creating any skill.
+allowed-tools: Read, Write, Edit, Glob, Grep
 ---
 
-# Skill Creation Guide
+# Skill Creation Reference
 
-Skills are stored in two locations:
+Read this before creating or editing any skill. For the full template, see [TEMPLATE.md](TEMPLATE.md).
 
-- **`local/skills/<skill-name>/SKILL.md`** — Personal skills. **Always create new skills here.** This directory is for your custom behaviors and won't be synced to the public repo.
-- **`.claude/skills/<skill-name>/SKILL.md`** — Framework skills. **NEVER create or modify skills here.** These are core framework behaviors maintained by the developer.
+## Where Skills Live
 
-Every skill serves dual purpose:
+- **`local/skills/<name>/SKILL.md`** — Your skills. Always create here.
+- **`.claude/skills/<name>/SKILL.md`** — Framework skills. Never modify.
 
-- **Manual**: Invoked via the Skill tool during conversation
-- **Idle**: Runs automatically when chat goes quiet (requires `## Idle Behavior` section)
+## Frontmatter
 
-## Required Format
-
-```markdown
+```yaml
 ---
-name: skill-name
-description: When to use this skill (idle system reads this to decide when to run it)
+name: my-skill              # lowercase, hyphens only, matches directory name
+description: Does X when Y.  # Third person. What it does + when to use it.
+allowed-tools: Read, Edit    # Tools this skill needs (comma-separated)
+model: sonnet                # Optional: haiku, sonnet, opus
 ---
+```
 
-# Skill Name
+## Key Sections
 
-[Instructions for what the skill does]
+- **`## When to Use`** — Required for chat skills. Without it, the skill is idle-only.
+- **`## Idle Behavior`** + **`Cooldown: N minutes`** — Required for idle skills. Without both, the skill won't auto-run.
 
-## Allowed Tools
+## Progressive Disclosure
 
-Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, mcp__custom-tools__search_transcripts
-(list only what the skill actually needs)
+Keep SKILL.md under 100 lines. Move detailed content to reference files in the skill directory:
+
+```
+my-skill/
+  SKILL.md         # Overview + navigation (loaded when skill triggers)
+  REFERENCE.md     # Detailed docs (loaded only when needed)
+  FORMAT.md        # Data format examples
+```
+
+SKILL.md references them: "See [REFERENCE.md](REFERENCE.md) for details." Claude reads reference files only when needed — zero token cost until accessed. Keep references one level deep (no nested references).
+
+## Dead Zones
+
+If a skill detects nothing to do until a future time, edit its own `Cooldown:` line to a longer value. The skill loader hot-reloads every idle cycle. Edit back to normal when the dead zone passes.
+
+## Sending Messages to Discord
+
+Idle runs have no conversation output. Use `send_to_channel` with `channel_id: "group"`.
 
 ## When to Use
 
-[Explain triggers - when should this skill activate?]
-
-## [Any additional instruction sections]
-
-## Idle Behavior
-
-Cooldown: 120 minutes
-
-[What to do when running as an idle behavior.]
-[Without this section, the skill is manual-only and will NOT run automatically.]
-```
-
-## Critical Requirements
-
-### Skill Location
-
-**All new skills go in `local/skills/`.** The `.claude/skills/` directory is reserved for framework skills and must not be modified. The idle system scans both directories automatically.
-
-### Idle Registration
-
-The idle system scans for `## Idle Behavior` with a `Cooldown:` line. Both are required.
-
-- **Without `## Idle Behavior`**: Skill is manual-only, never runs on its own
-- **Without `Cooldown:`**: Idle system can't schedule it, skips it
-- **Cooldown format**: `Cooldown: 30 minutes` or `Cooldown: 4 hours`
-
-### File Paths in Idle Runs
-
-Idle runs execute in **isolated sessions** with no conversation history. The working directory is injected into the system prompt, so use relative paths like `agent-data/memories/` in skill instructions — the model will resolve them against the working directory.
-
-**Do NOT** use hardcoded absolute paths (like `/root/agent-data/`). The project directory varies by machine.
-
-**Do** reference files relative to the project root:
-- `agent-data/memories/` — memory files
-- `agent-data/relationships/` — relationship files
-- `agent-data/impressions/` — impression files
-- `agent-data/learned-patterns.md` — learned patterns
-- `agent-data/persona.md` — persona
-
-### Sending Messages to Discord
-
-During idle runs, your text output goes nowhere - it's not a conversation. To post to Discord:
-
-- Use the `send_to_channel` tool
-- Set `channel_id` to `"group"` for the main group chat (the tool accepts channel aliases — check its description for the full list)
-- Include `mcp__custom-tools__send_to_channel` in your Allowed Tools
-
-### Frontmatter
-
-- `name`: Must match the directory name
-- `description`: The idle system and behavior selector read this to decide when to use the skill
-- `model`: Optional. `haiku`, `sonnet`, or `opus`. Omit to use the default (sonnet)
-
-## Examples
-
-Look at existing skills for reference:
-
-- `.claude/skills/impression-consolidation` - Framework idle skill, file operations only
-- `.claude/skills/conversation-logging` - Framework skill, both manual and idle
-- `local/skills/pot-stirrer` - Personal idle skill, sends messages to Discord via send_to_channel
-
-## Idle Behavior
-
-Cooldown: 8 hours
-
-Check if skills need improvement or if a new skill is warranted. Be efficient and deliberate.
-
-### Step 1: Gather context (4-5 reads/searches max)
-
-Skills live in two directories — list both to see what exists:
-- `local/skills/` — your personal skills (create and modify these)
-- `.claude/skills/` — framework skills (read-only, do NOT modify)
-
-Read `agent-data/learned-patterns.md` (self-corrections section especially) and the most recent memory file. Look for:
-- Repeated failures or complaints about a specific skill
-- Repeated manual actions that you keep doing without a skill
-- Shifts in group behavior (new game everyone's playing, new shared interest)
-
-**Also check:**
-- `agent-data/hypotheses.md` — Validated patterns (especially confirmed/promoted hypotheses) may reveal skill opportunities
-- `search_transcripts` — Search for repeated questions or tasks that show up in conversations but might not make it into memory files (e.g., "patch notes", "what should we play", "playtime")
-
-### Step 2: Decide (pick ONE or do nothing)
-
-**Improve an existing skill** — Only if there's evidence it's failing repeatedly. Read the skill file, then pull the RIGHT context for that skill type. **Only modify skills in `local/skills/`.** If a framework skill in `.claude/skills/` needs improvement, note it in a memory file for the developer.
-
-**Create a new skill** — Only if a pattern appeared 3+ times in recent memories AND it's a genuinely repeated action, not a one-off. **Always create in `local/skills/`.** A skill is justified when:
-- You keep doing the same multi-step task manually (e.g., "every time someone asks about a game, I search for patch notes, player counts, and news")
-- The group's behavior shifted in a way that warrants automation (e.g., "they started playing a new game and keep asking for updates")
-- There's a clear trigger and a clear action
-
-A skill is NOT justified when:
-- It happened once or twice
-- It's just a conversational pattern (those go in learned-patterns.md, not a skill)
-- It's something you can already do with existing tools without a formalized process
-
-**Do nothing** — This is the correct choice most of the time. If nothing jumps out from the 2-3 files you read, stop immediately. Do not keep reading files hoping to find something.
-
-### What NOT to do
-- Do NOT read all skill files to "review" them
-- Do NOT create or modify skills in `.claude/skills/` — that's the framework directory
-- Do NOT create skills for things that are better captured as learned patterns
-- Do NOT improve a skill based on vibes — only based on specific evidence of failure
+Invoke this skill before creating a new skill or making significant edits to an existing one.

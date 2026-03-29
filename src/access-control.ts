@@ -45,6 +45,16 @@ const PUBLIC_READ_PATHS = [
   ...resolveLocalPaths(localPaths.read),
 ];
 
+/** Paths the creator (Greg) can read — broader than public but not unrestricted */
+const CREATOR_READ_PATHS = [
+  AGENT_DATA_DIR,                                   // all of agent-data/
+  path.join(PROJECT_DIR, ".claude"),                 // .claude/ (skills, agents)
+  path.join(PROJECT_DIR, "local"),                   // local/ (extensions, tools, skills, docs)
+  path.join(PROJECT_DIR, "EXTENSIONS.md"),           // extension API docs
+  path.join(PROJECT_DIR, "DEVELOPMENT.md"),          // dev docs
+  path.join(PROJECT_DIR, "CLAUDE.md"),               // project rules
+];
+
 /** Paths non-creators can write (relationship data, observations + local config paths) */
 const PUBLIC_WRITE_PATHS = [
   path.join(AGENT_DATA_DIR, "relationships"),
@@ -58,7 +68,7 @@ const PUBLIC_WRITE_PATHS = [
 // ============================================================================
 
 function isPathInAllowlist(filePath: string, allowlist: string[]): boolean {
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(PROJECT_DIR, filePath);
   for (const allowed of allowlist) {
     if (resolved === allowed || resolved.startsWith(allowed + path.sep)) {
       return true;
@@ -97,7 +107,40 @@ const WRITE_DENIED_MSG =
 export function buildAccessControlHooks(
   isCreator: boolean
 ): Partial<Record<HookEvent, HookCallbackMatcher[]>> | undefined {
-  if (isCreator) return undefined;
+  // Creator mode: restrict filesystem reads to known paths (prevents wandering src/, node_modules/, etc.)
+  // Write/Edit/Bash remain unrestricted for creator.
+  if (isCreator) {
+    const creatorReadDeniedMsg =
+      "This path is outside your working directories. " +
+      `You can read: agent-data/, .claude/, local/, EXTENSIONS.md, DEVELOPMENT.md, CLAUDE.md.`;
+
+    const creatorReadHook = async (input: { hook_event_name: string; tool_name?: string; tool_input?: unknown }) => {
+      if (input.hook_event_name !== "PreToolUse") return {};
+      const preInput = input as PreToolUseHookInput;
+      const toolInput = preInput.tool_input as Record<string, unknown> | undefined;
+      const filePath = (toolInput?.file_path ?? toolInput?.path ?? "") as string;
+
+      // Allow pathless Grep/Glob (they search from cwd, which is PROJECT_DIR)
+      if (!filePath) return {};
+
+      if (isPathInAllowlist(filePath, CREATOR_READ_PATHS)) return {};
+
+      log("SDK", `CREATOR READ DENIED: ${filePath} (outside allowed paths)`);
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: creatorReadDeniedMsg,
+        } satisfies PreToolUseHookSpecificOutput,
+      };
+    };
+
+    return {
+      PreToolUse: [
+        { matcher: "Read|Glob|Grep", hooks: [creatorReadHook] },
+      ],
+    };
+  }
 
   const readHook = async (input: { hook_event_name: string; tool_name?: string; tool_input?: unknown }) => {
     if (input.hook_event_name !== "PreToolUse") return {};

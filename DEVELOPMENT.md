@@ -13,7 +13,7 @@ A self-learning Discord selfbot using:
 2. **Per-session turn queues**: Prevents concurrent agent calls per channel
 3. **Atomic file writes**: tmp file + rename pattern for crash safety
 4. **Append-only transcripts**: JSONL format, never modify historical entries
-5. **Memory flush before compaction**: At ~140k tokens, saves memories to disk before SDK auto-compacts
+5. **Memory flush**: At ~400k tokens, saves memories to disk. Session continues until 700k hard restart.
 6. **Conversation tracking**: Hybrid per-user (2.5min) + channel-wide (45s) for natural follow-ups
 7. **Impressions**: Append-only JSONL, hash-deduped, weight-sorted relationship memories
 
@@ -54,7 +54,7 @@ src/                        # Framework source (synced to public branch)
   haiku-router.ts         # Buffer/classify/route pipeline for Haiku message triage
   context-loader.ts       # Load persona, memories, patterns, relationships from disk
   session-manager.ts      # Session lifecycle, token tracking, JSONL sync
-  memory-flush.ts         # Background memory flush at ~140k token threshold
+  memory-flush.ts         # Background memory flush at ~400k token threshold
   local-config.ts         # Loads local/config.json (personal tool names, extra paths)
 
   # Discord integration
@@ -93,8 +93,13 @@ src/                        # Framework source (synced to public branch)
     schema.ts             # Zod schema for runtime-config.json
     runtime-config.ts     # Config loading, validation, operator bounds clamping
 
+  extensions/
+    types.ts              # Extension interface and hook parameter types
+    loader.ts             # Discovery, composition, file-watcher hot-reload
+
 local/                      # Personal content (tracked on main, absent on public)
   config.json             # Declares personal tool names + extra paths
+  extensions/             # Composable extensions (see EXTENSIONS.md)
   skills/                 # Personal idle skills
   tools/                  # Personal MCP tool code (game_lookup, etc.)
     index.ts              # Exports registerTools() function
@@ -104,8 +109,9 @@ local/                      # Personal content (tracked on main, absent on publi
 
 ### Token Management
 
-- **Soft threshold (140k)**: Triggers memory flush - saves important memories to disk
-- **SDK auto-compaction**: When context is full, SDK automatically handles it
+- **Soft threshold (400k)**: Triggers memory flush — saves important memories to disk. Session continues.
+- **Hard restart (700k)**: Tears down session and starts fresh.
+- **SDK auto-compaction**: Safety net if neither threshold fires.
 - **Token tracking**: Read from SDK's JSONL file (`latestContextSize`), NOT cumulative billing
 
 ### SDK Token Tracking (IMPORTANT)

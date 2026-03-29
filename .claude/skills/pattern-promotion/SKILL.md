@@ -1,13 +1,11 @@
 ---
 name: pattern-promotion
-description: Compacts learned patterns by promoting proven ones to persona
+description: Compacts learned patterns by promoting proven ones to persona. Removes stale entries and challenges existing promotions against new evidence.
 model: sonnet
+allowed-tools: Read, Edit
 ---
 
 # Pattern Compaction & Promotion
-
-## Allowed Tools
-Read, Edit
 
 ## Idle Behavior
 Cooldown: 24 hours

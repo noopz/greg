@@ -56,6 +56,7 @@ import { setSearchContext, setSearchContextForSession } from "./transcript-index
 import { reviewTurn } from "./post-turn-reviewer";
 import { isAdditiveTool } from "./custom-tools";
 import { BOT_NAME_LOWER } from "./config/identity";
+import { getHooks } from "./extensions/loader";
 import {
   getStreamingSession,
   type TypingCallback,
@@ -74,7 +75,7 @@ function resolveUserIds(discordContext: string, options: AgentContext): string[]
 // Turn Configuration
 // ============================================================================
 
-interface TurnConfig {
+export interface TurnConfig {
   mode: "main" | "fork";
   contextRefreshCallback?: ContextRefreshCallback;
   /** Typing callback for streaming output. */
@@ -171,7 +172,9 @@ export async function executeTurn(
     // Resume from session's own last ID, or from persisted ID for creator only.
     // Public session must never resume the creator's persisted session ID.
     const resumeId = session.lastSessionId ?? (options.isCreator ? sessionId : undefined);
-    const systemPromptConfig = buildSystemPromptConfig(persona);
+    // Extension: allow overriding the system prompt
+    const extPrompt = await getHooks().systemPrompt(persona ?? "");
+    const systemPromptConfig = extPrompt ?? buildSystemPromptConfig(persona);
     session.start({
       cwd: PROJECT_DIR,
       model: "claude-sonnet-4-6",

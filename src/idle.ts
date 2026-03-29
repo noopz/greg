@@ -26,6 +26,8 @@ import { getAllIdleBehaviors, formatCooldown } from "./skill-loader";
 import { StreamingSession } from "./streaming-session";
 import { executeIdleBehaviorOnSession, executeIdleBehaviorStandalone, buildIdleStats } from "./idle-executor";
 import { chooseBehaviorWithHaiku } from "./idle-selector";
+import { getHooks } from "./extensions/loader";
+import { buildAccessControlHooks } from "./access-control";
 import { gatherPreconditions } from "./idle-preconditions";
 import { AGENT_DATA_DIR, PROJECT_DIR, localDate } from "./paths";
 import { BOT_NAME } from "./config/identity";
@@ -282,11 +284,13 @@ briefly summarize what you did.`;
         ...getLocalToolNames("creator"),
       ];
 
+      const accessHooks = buildAccessControlHooks(true); // creator-level read restrictions
       session.start({
         cwd,
         model: "claude-sonnet-4-6",
         systemPrompt,
         allowedTools,
+        ...(accessHooks ? { hooks: accessHooks } : {}),
         maxBudgetUsd: 5.0,
         mcpServers: this.toolsServer ? { "custom-tools": this.toolsServer } : undefined,
         env: {
@@ -335,6 +339,12 @@ briefly summarize what you did.`;
               error("IDLE", "Failed to send idle audit DM", err);
             });
           }
+
+          // Extension: notify skill completion for effectiveness tracking
+          await getHooks().onSkillComplete({
+            skillName: behavior.name, success: true, cost: 0,
+            toolCalls: 0, durationMs: 0, responseText: responseText,
+          });
 
           // Token watchdog: stop batch early if context is getting too large
           if (inputTokens > 500_000) {

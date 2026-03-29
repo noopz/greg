@@ -18,6 +18,7 @@ import { getLocalToolNames } from "./local-config";
 import { BOT_NAME } from "./config/identity";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { StreamingSession } from "./streaming-session";
+import { buildAccessControlHooks } from "./access-control";
 
 // ============================================================================
 // Tool Input Logging
@@ -103,6 +104,7 @@ export async function executeIdleBehaviorStandalone(
   toolsServer: McpSdkServerConfigWithInstance | null
 ): Promise<string | null> {
   const today = localDate();
+  const accessHooks = buildAccessControlHooks(true); // creator-level read restrictions
 
   // Load persona for context (but not full conversation history)
   let persona = `You are ${BOT_NAME}, a snarky but helpful AI.`;
@@ -170,6 +172,7 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
         allowDangerouslySkipPermissions: true,
         // NO resume - fresh session each time, prevents context buildup
         systemPrompt: systemContext,
+        ...(accessHooks ? { hooks: accessHooks } : {}),
         allowedTools: [
           "Read",
           "Write",

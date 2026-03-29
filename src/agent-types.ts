@@ -225,6 +225,11 @@ const LEAKED_REASONING_PATTERNS: RegExp[] = [
   // Self-referential debugging about being a bot
   /\bnon-creator\s+(request|message|user)\b/i,
   /\bSDK\b.*\b(error|fail|block|session)\b/i,
+  // Leaked system context (CLAUDE.md, MEMORY.md, project instructions)
+  /^#\s*claudeMd\b/i,
+  /^Contents of \/Users\//,
+  /^# (Project Rules|Memory Index)\b/,
+  /\bCLAUDE\.md\b.*\bproject instructions\b/i,
   // Metacognitive planning — narrating own thought process instead of responding
   /^(now\s+)?I\s+have\s+enough\s+(data|info|information)\b/i,
   /^let\s+me\s+(think|reason|analyze|consider|figure|work)\s+(about|through|on)\b/i,
@@ -238,7 +243,21 @@ const LEAKED_REASONING_PATTERNS: RegExp[] = [
  * Sanitize response by stripping reasoning tags and filtering leaked internal text.
  */
 export function sanitizeResponse(response: string): string {
-  let sanitized = stripReasoningTags(response);
+  // Strip system-reminder blocks (context leak — model regurgitating its own system prompt)
+  let sanitized = response;
+  const closedTags = sanitized.match(/<system-reminder>[\s\S]*?<\/system-reminder>/g);
+  if (closedTags) {
+    sanitized = sanitized.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "");
+    log("SDK", `Stripped ${closedTags.length} system-reminder block(s) (${closedTags.join("").length} chars)`);
+  }
+  // Strip unclosed system-reminder tag — but only to the next double-newline (not entire response)
+  const unclosedMatch = sanitized.match(/<system-reminder>[^]*?(?=\n\n|$)/);
+  if (unclosedMatch) {
+    sanitized = sanitized.replace(/<system-reminder>[^]*?(?=\n\n|$)/, "");
+    log("SDK", `Stripped unclosed system-reminder tag (${unclosedMatch[0].length} chars)`);
+  }
+
+  sanitized = stripReasoningTags(sanitized);
 
   if (hasReasoningTags(response)) {
     const reduction = response.length - sanitized.length;

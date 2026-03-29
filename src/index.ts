@@ -14,6 +14,7 @@ import { channelId, userId } from "./agent-types";
 import { cancelMessage, cancelQueuedMessage } from "./turn-queue";
 import { getStreamingSession } from "./agent";
 import { getCurrentlyProcessingMessageId, interruptCurrentMessage } from "./bot";
+import { initExtensions, stopExtensions } from "./extensions/loader";
 
 // Execution paths:
 //   Main: bot.ts (Discord events) → turn-queue.ts (ordering/dedup) →
@@ -152,6 +153,9 @@ client.on("ready", async () => {
 
   startIdleLoop(client, config, idleConfig, customTools);
   startAuditWatcher(client, config.creatorId);
+
+  // Initialize extension system (discovers local/extensions/*.ts, starts file watcher)
+  await initExtensions(client, config);
 });
 
 client.on("messageCreate", (message) => {
@@ -216,6 +220,7 @@ async function gracefulShutdown(signal: string) {
   log("SHUTDOWN", `Received ${signal}, shutting down...`);
   stopIdleLoop();
   stopAuditWatcher();
+  stopExtensions();
   closeTranscriptIndex();
 
   // Close streaming sessions before process.exit so the output consumer

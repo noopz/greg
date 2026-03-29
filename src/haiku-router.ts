@@ -12,6 +12,7 @@ import { log, warn } from "./log";
 import type { AgentContext, TurnResult, ContextRefreshCallback } from "./agent-types";
 import { extractMessageContent } from "./agent-types";
 import { getTurnQueue, enqueueMessage } from "./turn-queue";
+import { getHooks } from "./extensions/loader";
 import { executeTurn } from "./turn-executor";
 import { CLASSIFIER_SYSTEM_PROMPT, buildClassifierPrompt, parseClassifierResponse } from "./gates/classifier";
 
@@ -298,7 +299,12 @@ async function triggerClassification(sessionKey: string): Promise<void> {
   log("CLASSIFY", `Classifying ${messages.length} buffered messages for ${sessionKey}`);
 
   try {
-    const classification = await classifyWithHaiku(sessionKey, messages);
+    // Extension: allow overriding message classification
+    const extClassification = await getHooks().classifyMessage(
+      messages.map(m => ({ userId: String(m.options.userId), content: extractMessageContent(m.context) })),
+      { currentTurnUserId: getTurnQueue(sessionKey)?.currentTurnUserId ?? "unknown" },
+    );
+    const classification = extClassification ?? await classifyWithHaiku(sessionKey, messages);
     await routeClassifiedMessages(sessionKey, messages, classification);
   } catch (err) {
     // Ultimate fallback - queue everything normally

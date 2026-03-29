@@ -18,14 +18,26 @@ import {
   registerBufferFunctions,
   processWithAgent as _processWithAgent,
 } from "./turn-queue";
+import type { TurnExecutor } from "./turn-queue";
 import { log } from "./log";
+import { getHooks } from "./extensions/loader";
 
 // ============================================================================
 // Module Initialization (runs once at import time)
 // ============================================================================
 
-// Wire up turn-queue -> turn-executor (avoids circular dep)
-registerTurnExecutor(executeAgentTurn);
+// Wrap executeAgentTurn with the extension executeTurn hook.
+// If an extension provides executeTurn, it runs instead (with the default as a parameter).
+const wrappedExecutor: TurnExecutor = async (discordContext, options, contextRefreshCallback, typingCallback) => {
+  const extResult = await getHooks().executeTurn(
+    discordContext, options, executeAgentTurn, contextRefreshCallback, typingCallback,
+  );
+  // Extension returned a result → use it. Null → run default.
+  return extResult ?? executeAgentTurn(discordContext, options, contextRefreshCallback, typingCallback);
+};
+
+// Wire up turn-queue -> turn-executor (with extension override support)
+registerTurnExecutor(wrappedExecutor);
 
 // Wire up turn-queue -> haiku-router (avoids circular dep)
 registerBufferFunctions(shouldBuffer, bufferMessage);
