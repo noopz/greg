@@ -28,6 +28,44 @@ const LOG_TAG = "EXT";
 const DEBOUNCE_MS = 500;
 
 // ============================================================================
+// Error Tracking
+// ============================================================================
+
+interface ExtensionError {
+  extensionName: string;
+  hookName: string;
+  error: string;
+  when: string;
+}
+
+const recentErrors: ExtensionError[] = [];
+const MAX_ERRORS = 20;
+
+function trackError(extensionName: string, hookName: string, err: unknown): void {
+  recentErrors.push({
+    extensionName,
+    hookName,
+    error: err instanceof Error ? err.message : String(err),
+    when: new Date().toISOString(),
+  });
+  if (recentErrors.length > MAX_ERRORS) recentErrors.shift();
+}
+
+/** Log and track an extension hook error */
+function hookError(extensionName: string, hookName: string, err: unknown): void {
+  logError(LOG_TAG, `${extensionName}.${hookName} failed`, err);
+  trackError(extensionName, hookName, err);
+}
+
+/** Consume extension errors for repair prompt. Clears buffer. */
+export function consumeExtensionErrors(): ExtensionError[] {
+  if (recentErrors.length === 0) return [];
+  const errors = [...recentErrors];
+  recentErrors.length = 0;
+  return errors;
+}
+
+// ============================================================================
 // Internal State
 // ============================================================================
 
@@ -192,7 +230,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
         try {
           await le.ext.onReady(client, config);
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.onReady failed`, err);
+          hookError(le.name, "onReady", err);
         }
       }
     },
@@ -208,7 +246,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
             return result;
           }
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.shouldRespond failed`, err);
+          hookError(le.name, "shouldRespond", err);
         }
       }
       return null; // No extension had an opinion → fall through to default gate
@@ -224,7 +262,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
       try {
         return await providers[0].ext.systemPrompt!(persona);
       } catch (err) {
-        logError(LOG_TAG, `${providers[0].name}.systemPrompt failed`, err);
+        hookError(providers[0].name, "systemPrompt", err);
         return null;
       }
     },
@@ -238,7 +276,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
           const sections = await le.ext.contextSections(ctx);
           allSections.push(...sections);
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.contextSections failed`, err);
+          hookError(le.name, "contextSections", err);
         }
       }
       return allSections;
@@ -254,7 +292,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
       try {
         return await providers[0].ext.executeTurn!(discordContext, options, defaultExecutor, contextRefreshCallback, typingCallback);
       } catch (err) {
-        logError(LOG_TAG, `${providers[0].name}.executeTurn failed`, err);
+        hookError(providers[0].name, "executeTurn", err);
         return null; // Fall back to default executor
       }
     },
@@ -271,7 +309,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
             break;
           }
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.postResponse failed`, err);
+          hookError(le.name, "postResponse", err);
           // Error → pass envelope through unmodified
         }
       }
@@ -288,7 +326,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
       try {
         return await providers[0].ext.memoryFlush!(recentConversation, ctx);
       } catch (err) {
-        logError(LOG_TAG, `${providers[0].name}.memoryFlush failed`, err);
+        hookError(providers[0].name, "memoryFlush", err);
         return null;
       }
     },
@@ -302,7 +340,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
           const criteria = await le.ext.reviewCriteria(toolNames, responseText, ctx);
           if (criteria) allCriteria.push(criteria);
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.reviewCriteria failed`, err);
+          hookError(le.name, "reviewCriteria", err);
         }
       }
       return allCriteria.length > 0 ? allCriteria.join("\n") : null;
@@ -318,7 +356,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
       try {
         return await providers[0].ext.selectIdleBehavior!(behaviorNames, ctx);
       } catch (err) {
-        logError(LOG_TAG, `${providers[0].name}.selectIdleBehavior failed`, err);
+        hookError(providers[0].name, "selectIdleBehavior", err);
         return null;
       }
     },
@@ -333,7 +371,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
       try {
         return await providers[0].ext.classifyMessage!(messages, queueContext);
       } catch (err) {
-        logError(LOG_TAG, `${providers[0].name}.classifyMessage failed`, err);
+        hookError(providers[0].name, "classifyMessage", err);
         return null;
       }
     },
@@ -345,7 +383,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
         try {
           await le.ext.onReaction(reaction);
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.onReaction failed`, err);
+          hookError(le.name, "onReaction", err);
         }
       }
     },
@@ -357,7 +395,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
         try {
           await le.ext.onSkillComplete(result);
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.onSkillComplete failed`, err);
+          hookError(le.name, "onSkillComplete", err);
         }
       }
     },
@@ -370,7 +408,7 @@ function compose(extensions: LoadedExtension[]): ComposedHooks {
         try {
           current = await le.ext.contextFilter(current, ctx);
         } catch (err) {
-          logError(LOG_TAG, `${le.name}.contextFilter failed`, err);
+          hookError(le.name, "contextFilter", err);
         }
       }
       return current;

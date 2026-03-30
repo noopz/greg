@@ -1,6 +1,6 @@
 ---
 name: pattern-learning
-description: Identifies behavioral patterns from recent conversations and reaction feedback, updates learned-patterns.md when 3+ observations confirm a pattern. Runs daily.
+description: Identifies behavioral patterns from recent conversations and reaction feedback, updates learned-patterns.md when 3+ observations confirm a pattern.
 allowed-tools: Read, Write, Edit, Bash
 ---
 
@@ -28,7 +28,8 @@ Categories in learned-patterns.md: Humor, Conversation, Per-Person, Games, Self-
 4. If new: add concisely (1-2 sentences, actionable)
 5. If existing: update with new evidence or revise if contradicted
 6. **Consolidation** (every run): merge redundant entries, keep file under ~8k chars
-7. Check `agent-data/hypotheses.md` — did recent data confirm/reject any hypothesis?
+
+Hypothesis creation and review is owned by the hypothesis-review skill — if you notice something that's a testable prediction rather than a confirmed pattern, note it in today's memory for hypothesis-review to pick up.
 
 ## When to Use
 
@@ -41,5 +42,4 @@ Cooldown: 24 hours
 1. Read memories from last 3-7 days + reaction-feedback.jsonl
 2. Look for recurring patterns (3+ occurrences)
 3. Update learned-patterns.md (add, revise, or consolidate)
-4. Check hypotheses for new evidence
-5. If nothing notable, just do the consolidation check
+4. If nothing notable, just do the consolidation check

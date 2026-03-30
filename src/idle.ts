@@ -23,8 +23,7 @@ import { log, logFull, error } from "./log";
 import { getEffectiveConfig } from "./config/runtime-config";
 import { type IdleConfig, setDebugMode, isDebugMode, isOnCooldown, recordBehaviorRun, loadIdleState, hasNewTranscriptsSince } from "./idle-state";
 import { getAllIdleBehaviors, formatCooldown } from "./skill-loader";
-import { StreamingSession } from "./streaming-session";
-import { executeIdleBehaviorOnSession, executeIdleBehaviorStandalone, buildIdleStats } from "./idle-executor";
+import { executeIdleBehaviorStandalone } from "./idle-executor";
 import { chooseBehaviorWithHaiku } from "./idle-selector";
 import { getHooks } from "./extensions/loader";
 import { buildAccessControlHooks } from "./access-control";
@@ -222,144 +221,32 @@ class IdleManager {
       return;
     }
 
+    // Cap batch at 3 to spread cost over time
+    const MAX_BATCH_SIZE = 3;
+    if (behaviors.length > MAX_BATCH_SIZE) {
+      log("IDLE", `Capping batch from ${behaviors.length} to ${MAX_BATCH_SIZE}`);
+      behaviors = behaviors.slice(0, MAX_BATCH_SIZE);
+    }
+
     log("IDLE", `Selected ${behaviors.length} behavior(s): ${behaviors.map(b => b.name).join(", ")}`);
 
-    // Create a local streaming session for the idle batch
-    const session = new StreamingSession("idle");
-    let sessionStarted = false;
-
-    try {
-      // Build system prompt for shared session
-      let persona = `You are ${BOT_NAME}, a snarky but helpful AI.`;
-      try {
-        const personaContent = await fs.readFile(
-          path.join(AGENT_DATA_DIR, "persona.md"),
-          "utf-8"
-        );
-        persona = personaContent;
-      } catch {
-        // Use default
+    // Each skill runs in its own fresh standalone session — no shared context,
+    // no accumulated tokens. ~15k tokens per skill (system prompt + task prompt).
+    for (const behavior of behaviors) {
+      if (isAgentBusy()) {
+        log("IDLE", "Main agent became busy, stopping idle batch");
+        break;
       }
 
-      let idleStats = "";
-      try {
-        idleStats = await buildIdleStats();
-      } catch {
-        // Non-critical
-      }
+      const ok = await this.runStandalone(behavior, idleMinutes);
+      if (ok) {
+        await recordBehaviorRun(behavior.name);
 
-      const cwd = PROJECT_DIR;
-      const timestamp = `${new Date().toLocaleString()} (${localDate()}, ${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
-
-      const systemPrompt = `## YOUR IDENTITY
-${persona}
-
-## WORKING DIRECTORY
-${cwd} — all file paths must be absolute, rooted here.
-
-## CUSTOM TOOLS
-See agent-data/tools.md for available custom tools.
-
-## CURRENT TIME
-${timestamp}
-
-${idleStats}
-
-## CONTEXT
-You've been idle for ${idleMinutes} minutes. You are running a batch of self-directed tasks.
-Each task will be given to you as a user message. Context accumulates — you can
-reference what you learned or read in earlier tasks. When you finish a task,
-briefly summarize what you did.`;
-
-      const allowedTools = [
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "Bash",
-        "WebSearch",
-        "WebFetch",
-        ...(this.toolsServer ? ["mcp__custom-tools__send_to_channel", "mcp__custom-tools__get_channel_history", "mcp__custom-tools__search_transcripts"] : []),
-        ...getLocalToolNames("creator"),
-      ];
-
-      const accessHooks = buildAccessControlHooks(true); // creator-level read restrictions
-      session.start({
-        cwd,
-        model: "claude-sonnet-4-6",
-        systemPrompt,
-        allowedTools,
-        ...(accessHooks ? { hooks: accessHooks } : {}),
-        maxBudgetUsd: 5.0,
-        mcpServers: this.toolsServer ? { "custom-tools": this.toolsServer } : undefined,
-        env: {
-          ...process.env,
-          KLIPY_API_KEY: process.env.KLIPY_API_KEY,
-        },
-      });
-      sessionStarted = true;
-      log("IDLE", "Started shared idle session");
-
-      for (const behavior of behaviors) {
-        // Yield to real conversations if main agent became busy
-        if (isAgentBusy()) {
-          log("IDLE", "Main agent became busy, stopping idle batch");
-          break;
-        }
-
-        // Check if session is still alive (may have died from previous skill error)
-        if (!session.isAlive()) {
-          log("IDLE", "Session died, falling back to standalone for remaining skills");
-          // Fall back to standalone for this and remaining behaviors
-          const ok = await this.runStandalone(behavior, idleMinutes);
-          if (ok) await recordBehaviorRun(behavior.name);
-          continue;
-        }
-
-        const source = behavior.skillPath ? `skill:${behavior.name}` : `builtin:${behavior.name}`;
-        log("IDLE", `Running on shared session: ${source}`);
-
-        try {
-          const { responseText, inputTokens } = await executeIdleBehaviorOnSession(behavior, session);
-          await recordBehaviorRun(behavior.name);
-
-          if (responseText) {
-            logFull("IDLE", `${behavior.name} completed: `, responseText);
-          } else {
-            log("IDLE", `${behavior.name} completed (no output)`);
-          }
-
-          // Send per-skill audit DM
-          if (this.client && this.config) {
-            const auditMsg = responseText
-              ? `[IDLE] **${behavior.name}** completed:\n${responseText.substring(0, 1800)}`
-              : `[IDLE] **${behavior.name}** completed (no output)`;
-            await dmCreator(this.client, this.config.creatorId, auditMsg).catch(err => {
-              error("IDLE", "Failed to send idle audit DM", err);
-            });
-          }
-
-          // Extension: notify skill completion for effectiveness tracking
-          await getHooks().onSkillComplete({
-            skillName: behavior.name, success: true, cost: 0,
-            toolCalls: 0, durationMs: 0, responseText: responseText,
-          });
-
-          // Token watchdog: stop batch early if context is getting too large
-          if (inputTokens > 500_000) {
-            log("IDLE", `Context size exceeds 500k (${inputTokens} tokens), stopping batch early`);
-            break;
-          }
-        } catch (err) {
-          error("IDLE", `Error during idle behavior '${behavior.name}'`, err);
-          // If session died, remaining skills will fall back to standalone via the isAlive check
-        }
-      }
-    } finally {
-      if (sessionStarted) {
-        session.close();
-        log("IDLE", "Closed idle session");
+        // Extension: notify skill completion for effectiveness tracking
+        await getHooks().onSkillComplete({
+          skillName: behavior.name, success: true, cost: 0,
+          toolCalls: 0, durationMs: 0, responseText: null,
+        });
       }
     }
   }

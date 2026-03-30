@@ -123,6 +123,10 @@ export function buildAccessControlHooks(
       // Allow pathless Grep/Glob (they search from cwd, which is PROJECT_DIR)
       if (!filePath) return {};
 
+      // Allow Glob/Grep on the project root itself (they need to search from cwd)
+      const resolved = path.resolve(PROJECT_DIR, filePath);
+      if ((preInput.tool_name === "Glob" || preInput.tool_name === "Grep") && resolved === PROJECT_DIR) return {};
+
       if (isPathInAllowlist(filePath, CREATOR_READ_PATHS)) return {};
 
       log("SDK", `CREATOR READ DENIED: ${filePath} (outside allowed paths)`);

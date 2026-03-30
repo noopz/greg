@@ -103,7 +103,7 @@ After processing, write the cleaned impressions back to each user's `.jsonl` fil
 
 ## Idle Behavior
 
-Cooldown: 360 minutes
+Cooldown: 720 minutes
 
 Time for impression maintenance. Review and consolidate the impression files:
 

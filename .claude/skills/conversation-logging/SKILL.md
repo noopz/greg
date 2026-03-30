@@ -27,7 +27,7 @@ After meaningful conversations, during idle time, or immediately after learning 
 
 ## Idle Behavior
 
-Cooldown: 30 minutes
+Cooldown: 120 minutes
 
 1. Read latest transcript file (JSONL format) or use `search_transcripts`
 2. Scan for: recognition moments, boundaries, new person info, jokes landing/flopping

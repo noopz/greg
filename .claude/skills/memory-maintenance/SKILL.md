@@ -27,7 +27,7 @@ When asked to "clean up memories" or "consolidate", or during idle time.
 
 ## Idle Behavior
 
-Cooldown: 8 hours
+Cooldown: 24 hours
 
 1. Check for memory files older than 2 weeks (need at least 3 to justify a run)
 2. Read and categorize content (keep/promote/archive/delete)

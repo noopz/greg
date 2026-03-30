@@ -27,7 +27,7 @@ import { BOT_NAME, BOT_NAME_LOWER } from "./config/identity";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { STALENESS_SYSTEM_PROMPT, buildStalenessPrompt, parseStalenessResponse } from "./gates/staleness";
 import { recordCost } from "./cost-tracker";
-import { getHooks } from "./extensions/loader";
+import { getHooks, consumeExtensionErrors } from "./extensions/loader";
 import { appendToTranscript, getTranscriptPath, appendJsonl, type TranscriptEntry } from "./persistence";
 import { PROJECT_DIR, TRANSCRIPTS_DIR, AGENT_DATA_DIR } from "./paths";
 import path from "node:path";
@@ -492,6 +492,22 @@ async function executePipeline(
     executeFollowup(reviewTask, message.channel).catch(err => {
       logError("CONTEXT", "Hypothesis review followup failed", err);
     });
+  }
+
+  // Trigger extension auto-repair if any hooks threw errors this turn.
+  // Runs as a background followup — Greg reads the error, fixes the extension.
+  if (result.kind === "response" && canScheduleFollowup()) {
+    const extErrors = consumeExtensionErrors();
+    if (extErrors.length > 0) {
+      const errorSummary = extErrors.map(e =>
+        `${e.extensionName}.${e.hookName}: ${e.error} (${e.when})`
+      ).join("\n");
+      const repairTask = `Extension repair: Your extensions have runtime errors. Fix them:\n\n${errorSummary}\n\nRead each failing extension file in local/extensions/, identify the bug from the error message, and Edit the fix. After fixing, the extension will hot-reload automatically. Silent file update — do NOT post to Discord.`;
+      log("EXT", `Scheduling extension repair followup (${extErrors.length} errors)`);
+      executeFollowup(repairTask, message.channel).catch(err => {
+        logError("EXT", "Extension repair followup failed", err);
+      });
+    }
   }
 }
 
