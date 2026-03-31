@@ -15,5 +15,7 @@
 
   "ignoreExportsUsedInFile": true,
 
-  "includeEntryExports": true
+  "includeEntryExports": true,
+
+  "tags": ["-internal"]
 }

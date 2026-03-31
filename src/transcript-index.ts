@@ -142,6 +142,43 @@ function createSchema(database: Database): void {
       UNIQUE(timestamp, content_hash)
     );
   `);
+
+  // Concept tagging tables — threads of messages tagged with semantic concepts
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS concepts (
+      id INTEGER PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL
+    );
+  `);
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_concept_name ON concepts(name);`);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS threads (
+      id INTEGER PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      ts_start TEXT NOT NULL,
+      ts_end TEXT NOT NULL,
+      participants TEXT NOT NULL
+    );
+  `);
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_thread_channel_time ON threads(channel_id, ts_start);`);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS thread_concepts (
+      thread_id INTEGER NOT NULL REFERENCES threads(id),
+      concept_id INTEGER NOT NULL REFERENCES concepts(id),
+      PRIMARY KEY (thread_id, concept_id)
+    );
+  `);
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_tc_concept ON thread_concepts(concept_id);`);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS thread_messages (
+      thread_id INTEGER NOT NULL REFERENCES threads(id),
+      timestamp TEXT NOT NULL,
+      PRIMARY KEY (thread_id, timestamp)
+    );
+  `);
 }
 
 /** Simple string hash for dedup (not crypto, just collision-resistant enough). */
@@ -177,6 +214,282 @@ function setLastIndexedTs(database: Database, ts: number): void {
     .query("INSERT OR REPLACE INTO _meta (key, value) VALUES ('last_indexed_ts', ?)")
     .run(String(ts));
 }
+
+// ============================================================================
+// Concept Tagging — storage and query helpers
+// ============================================================================
+
+/** Get the timestamp cursor for concept tagging progress. */
+export function getConceptCursor(): number {
+  if (!db) return 0;
+  const row = db.query("SELECT value FROM _meta WHERE key = 'last_concept_tagged_ts'").get() as
+    | { value: string }
+    | null;
+  return row ? Number(row.value) : 0;
+}
+
+/** Advance the concept tagging cursor. */
+export function setConceptCursor(ts: number): void {
+  if (!db) return;
+  db.query("INSERT OR REPLACE INTO _meta (key, value) VALUES ('last_concept_tagged_ts', ?)")
+    .run(String(ts));
+}
+
+/** Get messages from transcript_fts after a timestamp, grouped by channel. */
+export function getMessagesAfter(
+  sinceTs: number,
+  limit: number = 200,
+): Array<{ author: string; content: string; channel_id: string; timestamp: string }> {
+  if (!db) return [];
+  return db.query(`
+    SELECT author, content, channel_id, timestamp
+    FROM transcript_fts
+    WHERE CAST(timestamp AS INTEGER) > ?
+    ORDER BY CAST(timestamp AS INTEGER) ASC
+    LIMIT ?
+  `).all(sinceTs, limit) as Array<{ author: string; content: string; channel_id: string; timestamp: string }>;
+}
+
+/** Insert a tagged thread with its concepts and message timestamps. */
+export function insertTaggedThread(
+  channelId: string,
+  tsStart: string,
+  tsEnd: string,
+  participants: string,
+  concepts: string[],
+  messageTimestamps: string[],
+): void {
+  if (!db) return;
+  const database = db;
+
+  const transaction = database.transaction(() => {
+    // Insert thread
+    const result = database.query(
+      "INSERT INTO threads (channel_id, ts_start, ts_end, participants) VALUES (?, ?, ?, ?)"
+    ).run(channelId, tsStart, tsEnd, participants);
+    const threadId = Number(result.lastInsertRowid);
+
+    // Insert concepts (dedup via INSERT OR IGNORE)
+    const insertConcept = database.query(
+      "INSERT OR IGNORE INTO concepts (name) VALUES (?)"
+    );
+    const getConcept = database.query(
+      "SELECT id FROM concepts WHERE name = ?"
+    );
+    const insertThreadConcept = database.query(
+      "INSERT OR IGNORE INTO thread_concepts (thread_id, concept_id) VALUES (?, ?)"
+    );
+
+    for (const concept of concepts) {
+      const normalized = concept.toLowerCase().trim().replace(/\s+/g, "-");
+      if (!normalized) continue;
+      insertConcept.run(normalized);
+      const row = getConcept.get(normalized) as { id: number } | null;
+      if (row) insertThreadConcept.run(threadId, row.id);
+    }
+
+    // Insert message timestamps
+    const insertMsg = database.query(
+      "INSERT OR IGNORE INTO thread_messages (thread_id, timestamp) VALUES (?, ?)"
+    );
+    for (const ts of messageTimestamps) {
+      insertMsg.run(threadId, ts);
+    }
+  });
+
+  transaction();
+}
+
+export interface ConceptSearchResult {
+  threadId: number;
+  channelId: string;
+  tsStart: number;
+  tsEnd: number;
+  participants: string;
+  concepts: string[];
+  messages: TranscriptSearchResult[];
+}
+
+/** Search by concept with optional facets (who, when, channel). */
+export function searchByConcept(
+  conceptTerm: string,
+  opts: {
+    who?: string;
+    whenStart?: string;
+    whenEnd?: string;
+    channelId?: string;
+    limit?: number;
+  } = {},
+): ConceptSearchResult[] {
+  if (!db) return [];
+
+  const limit = opts.limit ?? 10;
+
+  // Expand synonyms
+  const terms = [conceptTerm];
+  const synonymGroup = CONCEPT_SYNONYMS[conceptTerm.toLowerCase()];
+  if (synonymGroup) terms.push(...synonymGroup);
+  // Also check if the search term IS a synonym pointing to a canonical name
+  for (const [canonical, syns] of Object.entries(CONCEPT_SYNONYMS)) {
+    if (syns.includes(conceptTerm.toLowerCase()) && !terms.includes(canonical)) {
+      terms.push(canonical);
+    }
+  }
+
+  // Build LIKE conditions for concept matching
+  const conceptConditions = terms.map(() => "c.name LIKE ?").join(" OR ");
+  const conceptParams = terms.map((t) => `%${t}%`);
+
+  let sql = `
+    SELECT t.id, t.channel_id, t.ts_start, t.ts_end, t.participants,
+           GROUP_CONCAT(DISTINCT c.name) as concepts
+    FROM threads t
+    JOIN thread_concepts tc ON t.id = tc.thread_id
+    JOIN concepts c ON tc.concept_id = c.id
+    WHERE (${conceptConditions})
+  `;
+  const params: (string | number)[] = [...conceptParams];
+
+  if (opts.who) {
+    sql += " AND t.participants LIKE ?";
+    params.push(`%${opts.who}%`);
+  }
+  if (opts.whenStart) {
+    sql += " AND CAST(t.ts_start AS INTEGER) >= ?";
+    params.push(opts.whenStart);
+  }
+  if (opts.whenEnd) {
+    sql += " AND CAST(t.ts_end AS INTEGER) <= ?";
+    params.push(opts.whenEnd);
+  }
+  if (opts.channelId) {
+    sql += " AND t.channel_id = ?";
+    params.push(opts.channelId);
+  }
+
+  sql += " GROUP BY t.id ORDER BY CAST(t.ts_end AS INTEGER) DESC LIMIT ?";
+  params.push(limit);
+
+  try {
+    const threads = db.query(sql).all(...params) as Array<{
+      id: number;
+      channel_id: string;
+      ts_start: string;
+      ts_end: string;
+      participants: string;
+      concepts: string;
+    }>;
+
+    return threads.map((t) => {
+      // Get messages for this thread
+      const msgs = db!.query(`
+        SELECT f.author, f.content as snippet, f.channel_id, f.timestamp, f.entry_type
+        FROM thread_messages tm
+        JOIN transcript_fts f ON tm.timestamp = f.timestamp
+        WHERE tm.thread_id = ?
+        ORDER BY CAST(f.timestamp AS INTEGER) ASC
+      `).all(t.id) as Array<{
+        author: string;
+        snippet: string;
+        channel_id: string;
+        timestamp: string;
+        entry_type: string;
+      }>;
+
+      return {
+        threadId: t.id,
+        channelId: t.channel_id,
+        tsStart: Number(t.ts_start),
+        tsEnd: Number(t.ts_end),
+        participants: t.participants,
+        concepts: t.concepts.split(","),
+        messages: msgs.map((m) => ({
+          author: m.author,
+          snippet: m.snippet,
+          channelId: m.channel_id,
+          timestamp: Number(m.timestamp),
+          entryType: m.entry_type,
+        })),
+      };
+    });
+  } catch (err) {
+    logError("FTS", "Concept search failed", err);
+    return [];
+  }
+}
+
+/** Get top existing concept names for reuse in tagger prompts. */
+export function getExistingConceptNames(limit: number = 50): string[] {
+  if (!db) return [];
+  const rows = db.query(`
+    SELECT c.name, COUNT(tc.thread_id) as cnt
+    FROM concepts c
+    JOIN thread_concepts tc ON c.id = tc.concept_id
+    GROUP BY c.name
+    ORDER BY cnt DESC
+    LIMIT ?
+  `).all(limit) as Array<{ name: string; cnt: number }>;
+  return rows.map((r) => r.name);
+}
+
+/** Get a per-channel concept index for the memory selector. */
+export function getConceptIndex(channelId: string): {
+  conceptCounts: Array<{ name: string; count: number }>;
+  participantConcepts: Array<{ participant: string; concepts: string }>;
+} {
+  if (!db) return { conceptCounts: [], participantConcepts: [] };
+
+  const conceptCounts = db.query(`
+    SELECT c.name, COUNT(DISTINCT tc.thread_id) as count
+    FROM concepts c
+    JOIN thread_concepts tc ON c.id = tc.concept_id
+    JOIN threads t ON tc.thread_id = t.id
+    WHERE t.channel_id = ?
+    GROUP BY c.name
+    ORDER BY count DESC
+    LIMIT 30
+  `).all(channelId) as Array<{ name: string; count: number }>;
+
+  const participantConcepts = db.query(`
+    SELECT t.participants as participant, GROUP_CONCAT(DISTINCT c.name) as concepts
+    FROM threads t
+    JOIN thread_concepts tc ON t.id = tc.thread_id
+    JOIN concepts c ON tc.concept_id = c.id
+    WHERE t.channel_id = ?
+    GROUP BY t.participants
+    ORDER BY COUNT(DISTINCT tc.thread_id) DESC
+    LIMIT 20
+  `).all(channelId) as Array<{ participant: string; concepts: string }>;
+
+  return { conceptCounts, participantConcepts };
+}
+
+/** Format concept search results for display. */
+export function formatConceptResults(results: ConceptSearchResult[]): string {
+  if (results.length === 0) return "No concept matches found.";
+
+  const sections = results.map((r) => {
+    const startDate = new Date(r.tsStart);
+    const endDate = new Date(r.tsEnd);
+    const dateStr = startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const header = `[${dateStr}] Thread: ${r.concepts.join(", ")} — ${r.participants}`;
+    const msgs = r.messages.map((m) => {
+      const time = new Date(m.timestamp).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      return `  [${time}] ${m.author}: ${m.snippet.substring(0, 200)}`;
+    });
+    return `${header}\n${msgs.join("\n")}`;
+  });
+
+  return sections.join("\n\n") + `\n\n${results.length} thread${results.length === 1 ? "" : "s"} found`;
+}
+
+const CONCEPT_SYNONYMS: Record<string, string[]> = {
+  "roast": ["burn", "insult", "trash-talk", "banter"],
+  "coding": ["code-help", "programming", "debugging"],
+  "argument": ["debate", "disagreement"],
+  "recommendation": ["game-recommendation", "suggestion"],
+  "help": ["tech-help", "code-help", "assistance"],
+};
 
 // ============================================================================
 // Content Extraction

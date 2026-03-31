@@ -16,9 +16,10 @@ import {
   MAX_PATTERNS_CHARS,
 } from "./context-cache";
 import { loadImpressions } from "./impressions";
-import { log } from "./log";
+import { log, error as logError } from "./log";
 import { BOT_NAME } from "./config/identity";
 import { getHooks } from "./extensions/loader";
+import { getMemoryHints, resetChannelMemoryState } from "./memory-selector";
 
 // ============================================================================
 // Session Mtime Tracking (deduplication of unchanged context)
@@ -116,8 +117,9 @@ export function addUsersToSnapshot(newUserIds: string[]): void {
  * Reset the session snapshot. Called when the session ID is cleared
  * so the next turn captures fresh mtimes.
  */
-export function resetSessionSnapshot(): void {
+export function resetSessionSnapshot(channelId?: string): void {
   sessionSnapshot = null;
+  if (channelId) resetChannelMemoryState(channelId);
   log("CONTEXT", "Session mtime snapshot reset");
 }
 
@@ -694,6 +696,35 @@ ${discordContext}
 ${process.cwd()}
 All file tool calls must use absolute paths rooted here (e.g. ${process.cwd()}/agent-data/memories/${today}.md).
 `;
+
+  // Memory selector: generate awareness hints for relevant past knowledge
+  const channelIdMatch = discordContext.match(/Channel ID: (\d+)/);
+  const channelId = channelIdMatch?.[1] ?? "";
+  const authorMatch = discordContext.match(/Author: (\S+?)@\d+/);
+  const authorName = authorMatch?.[1] ?? "";
+  // Extract a short snippet of the current message for the selector
+  const currentMsgMatch = discordContext.match(/Content: ([\s\S]*?)(?:\nMessage ID:|\n===|$)/);
+  const currentMsgSnippet = currentMsgMatch?.[1]?.trim().substring(0, 500) ?? "";
+
+  if (channelId && currentMsgSnippet) {
+    try {
+      const participantNames = userIds.map((uid) => uid); // IDs used as fallback names
+      const hints = await getMemoryHints(
+        channelId,
+        authorName,
+        currentMsgSnippet,
+        userIds,
+        participantNames,
+        streamingContinuation,
+      );
+      if (hints) {
+        context += `\n${hints}\n`;
+      }
+    } catch (err) {
+      // Memory selector is non-critical — never block context building
+      logError("CONTEXT", "Memory selector failed (non-critical)", err);
+    }
+  }
 
   // Extension: inject custom context sections
   const extSections = await getHooks().contextSections({

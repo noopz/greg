@@ -20,12 +20,21 @@ import { type BotConfig } from "./bot-types";
 import { sendWithTypingSimulation } from "./typing";
 import { executeFollowup, canScheduleFollowup, getActiveFollowupCount } from "./followup-executor";
 import { log, warn, error as logError } from "./log";
-import { searchTranscripts, formatSearchResults, getSearchContext, getSearchContextForSession, getDmChannelId } from "./transcript-index";
+import { searchTranscripts, formatSearchResults, getSearchContext, getSearchContextForSession, getDmChannelId, searchByConcept, formatConceptResults } from "./transcript-index";
 import { getStreamingSession } from "./streaming-session";
 import { recordBotActivity } from "./conversation";
 import { channelId as toChannelId } from "./agent-types";
 import { AGENT_DATA_DIR } from "./paths";
 import { BOT_NAME } from "./config/identity";
+
+/** Parse a date string as local timezone. Returns Unix ms or null for invalid input. */
+function parseLocalDate(input: string): number | null {
+  const ymd = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) return new Date(+ymd[1], +ymd[2] - 1, +ymd[3]).getTime();
+  const ym = input.match(/^(\d{4})-(\d{2})$/);
+  if (ym) return new Date(+ym[1], +ym[2] - 1, 1).getTime();
+  return null;
+}
 
 // Reviewer metadata — co-located with tool definitions so adding a tool = one file to edit.
 // reviewerHint: tells the reviewer WHEN to flag a missed opportunity
@@ -393,9 +402,9 @@ When the moment calls for a reaction, search first, text second. Send ONLY the G
 
     tool(
         "search_transcripts",
-        `Search your past conversation transcripts using FTS5. Use when someone references a past conversation or event — whether between you and them, or you and someone else.
+        `Search your past conversation transcripts using FTS5 keyword search or concept-based semantic search. Use when someone references a past conversation or event.
 
-Query syntax (FTS5 — write queries directly):
+## Keyword search (FTS5 — default):
 - "marvel rivals"  → exact phrase match
 - stuck AND queue   → both words required
 - stuck OR frozen   → either word
@@ -403,12 +412,20 @@ Query syntax (FTS5 — write queries directly):
 - stream*           → prefix match (streaming, streamed, etc.)
 - Plain words without operators default to OR (any word matches, best matches ranked higher)
 
-Examples:
-- "didn't you talk to REDACTED_USER about that?" → search_transcripts({query: 'REDACTED_USER AND [topic]'})
-- "remember when you roasted REDACTED_USER" → search_transcripts({query: '"roasted" AND REDACTED_USER'})
-- "you said marvel rivals was bad" → search_transcripts({query: '"marvel rivals"'})
+## Concept search (semantic — use for ideas/themes):
+- concept:roast          → find threads tagged with "roast" concept (works even if "roast" never appears in messages)
+- concept:roast who:Bob  → roast threads involving Bob
+- concept:game-recommendation who:Alice when:2026-03  → game recs from Alice in March
 
-Returns snippets ranked by relevance. Do NOT pass channel_id unless you specifically want to limit results to one channel — conversations often happen across channels, so omitting it searches everything.`,
+Concept search finds conversations by their *meaning*, not exact words. Use it when keyword search returns nothing because the idea doesn't match specific words.
+
+## Examples:
+- "didn't you talk to REDACTED_USER about that?" → search_transcripts({query: 'REDACTED_USER AND [topic]'})
+- "remember when you roasted REDACTED_USER" → search_transcripts({query: 'concept:roast who:REDACTED_USER'})
+- "you said marvel rivals was bad" → search_transcripts({query: '"marvel rivals"'})
+- "those times we made fun of each other" → search_transcripts({query: 'concept:banter'})
+
+Returns snippets ranked by relevance. If keyword search returns 0 results, concept search is tried automatically as a fallback.`,
         {
           query: z.string().min(1).describe('FTS5 query. Use AND/OR/NOT, "exact phrases", prefix* matching. Be specific — use names, topics, or distinctive words.'),
           limit: z.number().min(1).max(10).default(5).describe("Number of results (1-10, default 5)"),
@@ -443,6 +460,44 @@ Returns snippets ranked by relevance. Do NOT pass channel_id unless you specific
               filterChannelId = searchCtx.channelId ?? filterChannelId;
             }
 
+            // Parse concept: prefix and facets (who:, when:)
+            const conceptMatch = args.query.match(/^concept:(\S+)(.*)$/i);
+            if (conceptMatch) {
+              const conceptTerm = conceptMatch[1];
+              const rest = conceptMatch[2].trim();
+              const whoMatch = rest.match(/who:(\S+)/i);
+              const whenMatch = rest.match(/when:(\S+)/i);
+
+              // Parse when: value as local timezone date
+              let whenStart: string | undefined;
+              let whenEnd: string | undefined;
+              if (whenMatch?.[1]) {
+                const parsed = parseLocalDate(whenMatch[1]);
+                if (parsed === null) {
+                  return { content: [{ type: "text" as const, text: `Invalid when: value "${whenMatch[1]}". Use YYYY-MM-DD or YYYY-MM format.` }] };
+                }
+                whenStart = String(parsed);
+                // For month-only input, cap upper bound at end of that month
+                const ymOnly = whenMatch[1].match(/^(\d{4})-(\d{2})$/);
+                if (ymOnly) {
+                  whenEnd = String(new Date(+ymOnly[1], +ymOnly[2], 1).getTime() - 1);
+                }
+              }
+
+              const conceptResults = searchByConcept(conceptTerm, {
+                who: whoMatch?.[1],
+                whenStart,
+                whenEnd,
+                channelId: filterChannelId,
+                limit: args.limit,
+              });
+
+              const formatted = formatConceptResults(conceptResults);
+              log("MCP", `search_transcripts concept: "${conceptTerm}" -> ${conceptResults.length} threads${whoMatch ? ` (who:${whoMatch[1]})` : ""}${filterChannelId ? ` (channel ${filterChannelId})` : ""}`);
+              return { content: [{ type: "text" as const, text: formatted }] };
+            }
+
+            // Standard FTS5 keyword search
             let results = searchTranscripts(args.query, {
               limit: args.limit,
               channelId: filterChannelId,
@@ -466,6 +521,23 @@ Returns snippets ranked by relevance. Do NOT pass channel_id unless you specific
                 log("MCP", `search_transcripts: "${args.query}" -> 0 in channel ${filterChannelId}, broadened to ${broadened.length} across all channels`);
                 const formatted = formatSearchResults(broadened);
                 return { content: [{ type: "text" as const, text: `(No results in the filtered channel — broadened to all channels)\n\n${formatted}` }] };
+              }
+            }
+
+            // Concept fallback: if FTS5 returned 0 results, try concept search
+            if (results.length === 0) {
+              const queryTerms = args.query.replace(/['"]/g, "").split(/\s+/).filter(Boolean);
+              // Try each term as a concept
+              for (const term of queryTerms) {
+                const conceptResults = searchByConcept(term, {
+                  channelId: filterChannelId,
+                  limit: args.limit,
+                });
+                if (conceptResults.length > 0) {
+                  const formatted = formatConceptResults(conceptResults);
+                  log("MCP", `search_transcripts: "${args.query}" -> 0 FTS5, concept fallback "${term}" -> ${conceptResults.length} threads`);
+                  return { content: [{ type: "text" as const, text: `(No keyword matches — found ${conceptResults.length} thread${conceptResults.length === 1 ? "" : "s"} by concept "${term}")\n\n${formatted}` }] };
+                }
               }
             }
 
