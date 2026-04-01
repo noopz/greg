@@ -421,6 +421,11 @@ export class StreamingSession {
     return this._idle;
   }
 
+  /** Timestamp (ms) of last SDK activity. 0 if never started. */
+  lastActivityTimestamp(): number {
+    return this.lastMessageAt;
+  }
+
   // ==========================================================================
   // Background Output Consumer
   // ==========================================================================

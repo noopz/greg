@@ -129,6 +129,26 @@ export async function executeTurn(
 
   // Determine if this is a continuation of an existing streaming session
   const session = getStreamingSession(options.isCreator);
+
+  // Cache-aware restart: if session is large and cache is likely cold (>5 min idle),
+  // start fresh instead of paying full input token cost on a stale session.
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+  const COLD_RESUME_TOKEN_THRESHOLD = 200_000;
+  if (session.isAlive()) {
+    const lastActivity = session.lastActivityTimestamp();
+    const idleMs = lastActivity > 0 ? Date.now() - lastActivity : 0;
+    const sessionData = await loadSessionData();
+    const totalTokens = sessionData?.totalTokens ?? 0;
+
+    if (totalTokens > COLD_RESUME_TOKEN_THRESHOLD && idleMs > CACHE_TTL_MS) {
+      log("SDK", `[STREAMING] Cold cache restart: ${totalTokens} tokens, idle ${Math.round(idleMs / 1000)}s > ${CACHE_TTL_MS / 1000}s TTL — starting fresh instead of resuming`);
+      session.close();
+      setCurrentSessionId(undefined);
+      resetSessionSnapshot(options.channelId);
+      rollHypothesisInclusion();
+    }
+  }
+
   const isStreamingContinuation = session.isAlive();
 
   // Build dynamic context (skip static blocks on continuation turns)

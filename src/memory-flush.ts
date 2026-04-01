@@ -24,8 +24,8 @@ import { BOT_NAME } from "./config/identity";
 let memoryFlushInProgress = false;
 
 // Constants
-const SOFT_THRESHOLD_TOKENS = 400000; // 400k tokens - snapshot memories to disk
-const MEMORY_FLUSH_BUFFER = 30000; // Minimum tokens to accumulate before re-triggering flush
+const SOFT_THRESHOLD_TOKENS = 200000; // 200k tokens - snapshot memories to disk (lowered to ensure context is saved before cache-aware restarts)
+const MEMORY_FLUSH_BUFFER = 100000; // Flush every 100k after threshold (200k, 300k, 400k, ...)
 
 /**
  * Read recent entries from a transcript file for memory flush context.
