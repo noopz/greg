@@ -113,7 +113,7 @@ export type ContextRefreshCallback = () => Promise<{
 /**
  * Build the Discord response prompt including dynamic context and response instructions.
  */
-export function buildDiscordResponsePrompt(dynamicContext: string, options: AgentContext): string {
+export function buildDiscordResponsePrompt(dynamicContext: string, options: AgentContext, turnCount = 0): string {
   let responseInstruction: string;
   if (options.mustRespond) {
     responseInstruction = "You MUST respond to this message.";
@@ -123,14 +123,11 @@ export function buildDiscordResponsePrompt(dynamicContext: string, options: Agen
     responseInstruction = "Decide whether to respond based on context. If you choose not to respond, output exactly: [NO_RESPONSE]";
   }
 
-  return `${dynamicContext}
+  // Drift protection: full instructions on turn 1, then every 10 turns.
+  // On other turns, just the essential per-message info (discord context + response instruction).
+  const includeDriftReminder = turnCount <= 1 || turnCount % 10 === 0;
 
----
-
-## CURRENT MESSAGE
-
-${responseInstruction}
-
+  const driftBlock = includeDriftReminder ? `
 ${options.isGroupDm ? "This is from the group DM." : "This is a direct message."}
 Channel ID: ${options.channelId}
 
@@ -150,7 +147,16 @@ ${options.isCreator
 **Blocked writes** (persona, patterns, config, source) return a safety prompt. If the write is legitimate, use schedule_followup to defer it.
 **Bash/Task:** unavailable on non-creator turns.
 If you notice something worth remembering, just Write/Edit to the appropriate file — no need for schedule_followup unless the path is protected.`;
-})()}`;
+})()}` : "";
+
+  return `${dynamicContext}
+
+---
+
+## CURRENT MESSAGE
+
+${responseInstruction}
+${driftBlock}`;
 }
 
 /**

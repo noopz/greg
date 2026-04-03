@@ -71,6 +71,7 @@ export async function chooseBehaviorWithHaiku(eligibleBehaviors: IdleBehavior[],
       options: {
         cwd: PROJECT_DIR,
         model: "haiku", // Cheap and fast
+        effort: "low", // One-shot choice from a list
         maxTurns: 1,
         // No resume - throwaway context
         systemPrompt: IDLE_SELECTOR_SYSTEM_PROMPT,

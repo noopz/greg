@@ -56,6 +56,7 @@ export interface StreamingSessionOptions {
   hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
   mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
   maxBudgetUsd?: number;
+  effort?: "low" | "medium" | "high" | "max";
   env?: Record<string, string | undefined>;
   /** Session ID to resume from a previous JSONL conversation. */
   resumeSessionId?: SessionId;
@@ -146,6 +147,9 @@ export class StreamingSession {
   private toolsSinceLastText = false;
   private lastCallInputTokens = 0;
 
+  // Turn counter (resets on session start, increments on each yieldMessage)
+  private _turnCount = 0;
+
   // Typing callback for the current turn (set by yieldMessage, cleared by waitForResponse)
   private currentTypingCallback: TypingCallback | null = null;
 
@@ -158,6 +162,11 @@ export class StreamingSession {
 
   constructor(label: string) {
     this.label = label;
+  }
+
+  /** Number of turns completed in the current session (resets on start). */
+  get turnCount(): number {
+    return this._turnCount;
   }
 
   // ==========================================================================
@@ -204,6 +213,7 @@ export class StreamingSession {
     this.currentToolNames.clear();
     this.currentToolInputs = [];
     this.toolsSinceLastText = false;
+    this._turnCount = 0;
     this.currentTypingCallback = null;
     this.lastMessageAt = 0;
 
@@ -220,6 +230,7 @@ export class StreamingSession {
         ...(options.hooks ? { hooks: options.hooks } : {}),
         ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
         ...(options.maxBudgetUsd !== undefined ? { maxBudgetUsd: options.maxBudgetUsd } : {}),
+        ...(options.effort ? { effort: options.effort } : {}),
         ...(options.resumeSessionId ? { resume: options.resumeSessionId } : {}),
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
@@ -233,6 +244,16 @@ export class StreamingSession {
 
     // Start background output consumer
     this.outputConsumerDone = this.consumeOutput();
+  }
+
+  /** Get context window usage breakdown by category. */
+  async getContextUsage(): Promise<{ categories: Array<{ name: string; tokens: number }>; totalTokens: number; maxTokens: number; percentage: number } | null> {
+    if (!this.queryHandle) return null;
+    try {
+      return await this.queryHandle.getContextUsage();
+    } catch {
+      return null;
+    }
   }
 
   /** Close the streaming session. */
@@ -289,6 +310,7 @@ export class StreamingSession {
     this.currentTypingCallback = typingCallback ?? null;
     this._idle = false;
     this.lastMessageAt = Date.now();
+    this._turnCount++;
 
     // Reset per-turn accumulation
     this.currentResponse = "";
@@ -304,7 +326,7 @@ export class StreamingSession {
 
     const msg: SDKUserMessage = {
       type: "user",
-      message: { role: "user", content: messageContent },
+      message: { role: "user", content: messageContent as string | SDKUserMessage["message"]["content"] },
       parent_tool_use_id: null,
       session_id: sessionIdValue,
     };
@@ -532,9 +554,10 @@ export class StreamingSession {
       // Track usage from this API call (last one = actual context size)
       const usage = assistantMsg.message?.usage;
       if (usage) {
-        this.lastCallInputTokens = (usage.input_tokens ?? 0) +
-          ((usage as Record<string, unknown>).cache_creation_input_tokens as number ?? 0) +
-          ((usage as Record<string, unknown>).cache_read_input_tokens as number ?? 0);
+        const u = usage as unknown as { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+        this.lastCallInputTokens = (u.input_tokens ?? 0) +
+          (u.cache_creation_input_tokens ?? 0) +
+          (u.cache_read_input_tokens ?? 0);
       }
       return;
     }
@@ -592,14 +615,28 @@ export class StreamingSession {
 // Singleton Instances (created at boot)
 // ============================================================================
 
-export const creatorSession = new StreamingSession("creator");
+export const creatorDmSession = new StreamingSession("creator-dm");
+export const creatorGroupSession = new StreamingSession("creator-group");
 export const publicSession = new StreamingSession("public");
 
 /**
  * Get the streaming session for the given context.
- * Creator DMs use the creator session (full tools).
- * Public channels use the public session (restricted tools).
+ *
+ * Three sessions to prevent DM/group cross-contamination:
+ * - creator-dm: Creator in DM (full tools, private context)
+ * - creator-group: Creator in group chat (full tools, group context)
+ * - public: Non-creator in group chat (restricted tools)
+ *
+ * DM and group contexts are never mixed — the model cannot leak
+ * private DM conversations into group chat or vice versa.
  */
-export function getStreamingSession(isCreator: boolean): StreamingSession {
-  return isCreator ? creatorSession : publicSession;
+export function getStreamingSession(isCreator: boolean, isCreatorDm = false): StreamingSession {
+  if (isCreator && isCreatorDm) return creatorDmSession;
+  if (isCreator) return creatorGroupSession;
+  return publicSession;
+}
+
+/** Get all streaming sessions (for interrupt, shutdown, etc.) */
+export function getAllStreamingSessions(): StreamingSession[] {
+  return [creatorDmSession, creatorGroupSession, publicSession];
 }

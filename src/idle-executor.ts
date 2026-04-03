@@ -166,6 +166,8 @@ You've been idle for ${idleMinutes} minutes. This is a self-directed task, not a
         model: behavior.model || "claude-sonnet-4-6", // Use skill's declared model, default to sonnet
         maxTurns: 30,
         maxBudgetUsd: 1.0,
+        effort: "medium", // Skills need multi-step reasoning
+        taskBudget: { total: 50000 }, // Token budget awareness for pacing
         settingSources: ["project"],
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,

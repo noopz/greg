@@ -7,6 +7,37 @@ import { BOT_NAME } from "./config/identity";
 
 const IMAGES_ENABLED = process.env.DISABLE_IMAGES !== "1";
 
+/**
+ * Get the effective message for image extraction purposes.
+ * Forwarded messages store attachments in messageSnapshots, not on the message itself.
+ * Returns the snapshot message if available, otherwise the original message.
+ */
+export function getImageSource(msg: Message): Message {
+  const snapshots = (msg as any).messageSnapshots;
+  if (snapshots?.size > 0) {
+    const snapshot = snapshots.first();
+    if (snapshot) {
+      const snapAttach = snapshot.attachments?.size ?? 0;
+      const snapEmbeds = snapshot.embeds?.length ?? 0;
+      if (snapAttach > 0 || snapEmbeds > 0) {
+        log("IMAGE", `Using forwarded snapshot: ${snapAttach} attachment(s), ${snapEmbeds} embed(s)`);
+        return snapshot;
+      }
+      // Snapshot exists but has no attachments/embeds — log for diagnosis
+      warn("IMAGE", `Forwarded snapshot empty: attachments=${snapAttach} embeds=${snapEmbeds} keys=${Object.keys(snapshot).slice(0, 10).join(",")}`);
+    }
+  }
+  return msg;
+}
+
+/**
+ * Check if a message has image attachments (including forwarded message snapshots).
+ */
+export function hasAttachments(msg: Message): boolean {
+  const source = getImageSource(msg);
+  return source.attachments.size > 0 || source.embeds.length > 0;
+}
+
 // Max image size to download (5MB)
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 // Supported image MIME types
@@ -91,8 +122,9 @@ export async function formatDiscordContext(
 
     // For empty-content messages (image/attachment-only), include a brief marker
     // so the model knows something was posted (important for conversational context).
+    // Handles forwarded messages where attachments are in messageSnapshots.
     if (!msg.content.trim()) {
-      if (msg.attachments.size > 0 || msg.embeds.length > 0) {
+      if (hasAttachments(msg)) {
         formattedMessages.push(`[${authorLabel(msg.author.id, msg.author.username)}]: [posted an image]`);
       }
       continue;
@@ -101,8 +133,8 @@ export async function formatDiscordContext(
     const isBot = msg.author.id === botId;
     const authorName = authorLabel(msg.author.id, msg.author.username);
 
-    // Build content — note attachments if present alongside text
-    const attachmentNote = msg.attachments.size > 0 ? " [+image]" : "";
+    // Build content — note attachments if present alongside text (incl. forwarded)
+    const attachmentNote = hasAttachments(msg) ? " [+image]" : "";
     const content = isBot
       ? msg.content
       : wrapExternalContent(msg.content + attachmentNote, { source: "Discord", author: msg.author.username });
@@ -176,10 +208,12 @@ Timestamp: ${new Date().toLocaleString()}
 
   // Add current message details
   const isCurrentMsgCreator = creatorId ? message.author.id === creatorId : true;
-  const currentAttachmentNote = message.attachments.size > 0
+  const currentImgSource = getImageSource(message);
+  const currentHasImages = currentImgSource.attachments.size > 0;
+  const currentAttachmentNote = currentHasImages
     ? isCurrentMsgCreator
-      ? `\nAttachments: ${message.attachments.size} image(s)`
-      : `\nAttachments: ${message.attachments.size} image(s) [NOT VISIBLE — only the creator can activate ${BOT_NAME}'s third eye]`
+      ? `\nAttachments: ${currentImgSource.attachments.size} image(s)`
+      : `\nAttachments: ${currentImgSource.attachments.size} image(s) [NOT VISIBLE — only the creator can activate ${BOT_NAME}'s third eye]`
     : "";
   let currentMsgContext = `
 === Current Message ===
@@ -323,18 +357,24 @@ export async function buildMessageContentBlocks(
 
   if (!IMAGES_ENABLED) return blocks;
 
+  // Use the image source (handles forwarded messages where attachments are in snapshots)
+  const imageMsg = getImageSource(message);
+  log("IMAGE", `buildMessageContentBlocks: source has ${imageMsg.attachments.size} attachment(s), ${imageMsg.embeds?.length ?? 0} embed(s)`);
+
   // Collect image URLs from attachments
   const imageUrls: string[] = [];
-  for (const [, attachment] of message.attachments) {
+  for (const [, attachment] of imageMsg.attachments) {
     if (attachment.contentType && SUPPORTED_IMAGE_TYPES.has(attachment.contentType)) {
       imageUrls.push(attachment.url);
-    } else if (attachment.url && /\.(jpg|jpeg|png|gif|webp)$/i.test(attachment.url)) {
+    } else if (attachment.url && /\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i.test(attachment.url)) {
       imageUrls.push(attachment.url);
+    } else if (attachment.url) {
+      warn("IMAGE", `Attachment skipped — contentType=${attachment.contentType ?? "null"} url=${attachment.url.slice(0, 80)}`);
     }
   }
 
   // Collect image URLs from embeds (e.g., posted image links)
-  for (const embed of message.embeds) {
+  for (const embed of imageMsg.embeds) {
     if (embed.image?.url) {
       imageUrls.push(embed.image.url);
     }

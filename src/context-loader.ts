@@ -6,6 +6,7 @@
  */
 
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { AGENT_DATA_DIR, MEMORIES_DIR, RELATIONSHIPS_DIR, IMPRESSIONS_DIR, AGENTS_DIR, SKILLS_DIR, LOCAL_SKILLS_DIR, localDate, safeFileId } from "./paths";
 import {
@@ -35,6 +36,7 @@ interface SessionMtimeSnapshot {
   persona: number | null;
   relationships: Map<string, RelSnapshotEntry>;  // keyed by userId
   impressions: Map<string, number | null>;        // keyed by userId
+  memories: Map<string, number | null>;           // keyed by filename
 }
 
 let sessionSnapshot: SessionMtimeSnapshot | null = null;
@@ -43,7 +45,7 @@ let sessionSnapshot: SessionMtimeSnapshot | null = null;
  * Snapshot current mtimes (and relationship content) for all tracked context files.
  * Called after the first turn's buildDynamicContext so the cache is warm.
  */
-export function snapshotSessionMtimes(userIds: string[]): void {
+export async function snapshotSessionMtimes(userIds: string[]): Promise<void> {
   const relMap = new Map<string, RelSnapshotEntry>();
   const impMap = new Map<string, number | null>();
 
@@ -56,11 +58,26 @@ export function snapshotSessionMtimes(userIds: string[]): void {
     impMap.set(uid, getFileMtime(path.join(IMPRESSIONS_DIR, `${safeUid}.jsonl`)));
   }
 
+  // Snapshot memory file mtimes (last 2 days)
+  const memMap = new Map<string, number | null>();
+  try {
+    const memFiles = (await fs.readdir(MEMORIES_DIR))
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .slice(-2);
+    for (const f of memFiles) {
+      memMap.set(f, getFileMtime(path.join(MEMORIES_DIR, f)));
+    }
+  } catch {
+    // No memories dir
+  }
+
   sessionSnapshot = {
     learnedPatterns: getFileMtime(path.join(AGENT_DATA_DIR, "learned-patterns.md")),
     persona: getFileMtime(path.join(AGENT_DATA_DIR, "persona.md")),
     relationships: relMap,
     impressions: impMap,
+    memories: memMap,
   };
 
   log("CONTEXT", `Session mtime snapshot taken (${userIds.length} users)`);
@@ -135,6 +152,44 @@ function getDirtyRelUserIds(userIds: string[]): string[] {
     if (snapped === undefined) return true; // New user not in snapshot
     return getFileMtime(path.join(RELATIONSHIPS_DIR, `${uid}.md`)) !== snapped.mtime;
   });
+}
+
+/** Check if all memory files are unchanged since snapshot. */
+function areMemoriesClean(): boolean {
+  if (!sessionSnapshot) return false;
+  try {
+    const files = fsSync.readdirSync(MEMORIES_DIR)
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .slice(-2);
+    // Check for new files not in snapshot
+    if (files.length !== sessionSnapshot.memories.size) return false;
+    for (const f of files) {
+      const snapped = sessionSnapshot.memories.get(f);
+      if (snapped === undefined) return false; // New file
+      if (getFileMtime(path.join(MEMORIES_DIR, f)) !== snapped) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Update memory mtimes in the snapshot after loading. */
+function updateMemorySnapshot(): void {
+  if (!sessionSnapshot) return;
+  try {
+    const files = fsSync.readdirSync(MEMORIES_DIR)
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .slice(-2);
+    sessionSnapshot.memories.clear();
+    for (const f of files) {
+      sessionSnapshot.memories.set(f, getFileMtime(path.join(MEMORIES_DIR, f)));
+    }
+  } catch {
+    // No memories dir
+  }
 }
 
 /** Returns user IDs whose impression files changed since snapshot. */
@@ -281,7 +336,7 @@ async function loadRecentMemories(): Promise<string> {
     const mdFiles = files
       .filter((f) => f.endsWith(".md"))
       .sort()
-      .slice(-5);
+      .slice(-2);
 
     if (mdFiles.length === 0) {
       return "No memories yet.";
@@ -441,7 +496,8 @@ async function discoverSkills(): Promise<string> {
  *   learned-patterns / persona: dirty → fresh session (handled in turn-executor)
  *   relationships: per-user delta (appended lines) or full re-send (edited)
  *   impressions: per-user re-send (sorting makes deltas impractical)
- *   memories / discord / time: always included (volatile)
+ *   memories: mtime cached per file, skip if unchanged on continuation
+ *   discord / time: always included (volatile)
  */
 export async function buildDynamicContext(
   discordContext: string,
@@ -456,10 +512,13 @@ export async function buildDynamicContext(
   const dirtyRelUserIds = getDirtyRelUserIds(userIds);
   const dirtyImpUserIds = getDirtyImpUserIds(userIds);
 
-  // Load patterns and memories (always needed or always skipped)
+  // Check if memory files have changed since last snapshot
+  const memoriesClean = sessionSnapshot !== null && areMemoriesClean();
+
+  // Load patterns and memories (skip if unchanged on continuation turns)
   const [patterns, memories] = await Promise.all([
     patternsClean ? Promise.resolve(null) : loadLearnedPatterns(),
-    loadRecentMemories(), // Always volatile
+    memoriesClean ? Promise.resolve(null) : loadRecentMemories(),
   ]);
 
   // Relationships: first turn loads all users; subsequent turns compute deltas
@@ -511,6 +570,11 @@ export async function buildDynamicContext(
   }
 
   if (patternsClean) log("CONTEXT", "Skipping learned-patterns (unchanged)");
+  if (memoriesClean) {
+    log("CONTEXT", "Skipping memories (unchanged)");
+  } else if (updateSnapshot && sessionSnapshot) {
+    updateMemorySnapshot();
+  }
 
   const today = localDate();
 
@@ -536,6 +600,7 @@ export async function buildDynamicContext(
   // session. On continuation turns they're already in SDK history from turn 1.
   // A condensed reminder is injected on continuations to prevent behavioral drift.
   const continuationReminder = streamingContinuation ? `## REMINDER
+You have autonomy. You do not need permission to use tools — decide what to do and do it. If a question needs data, fetch it. If something should be remembered, write it. Think, act, then reply.
 - To change behavior: Edit agent-data/learned-patterns.md or agent-data/persona.md
 - To remember something: Write to agent-data/memories/${today}.md
 - To update a relationship: Write to agent-data/relationships/<user-id>.md
@@ -680,10 +745,10 @@ ${patterns}
 ` : ""}${relationshipsBlock !== null ? `${relationshipsBlock}
 ` : ""}${impressionsBlock !== null ? `
 ${impressionsBlock}
-` : ""}
-## YOUR RECENT MEMORIES (last 5 days — Grep agent-data/memories/ for older entries)
+` : ""}${memories !== null ? `
+## YOUR RECENT MEMORIES (last 2 days — Grep agent-data/memories/ for older entries)
 ${memories}
-
+` : ""}
 ## DISCORD CONTEXT
 ${discordContext}
 

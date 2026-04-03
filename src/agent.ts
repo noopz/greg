@@ -59,5 +59,5 @@ export { isAgentBusy } from "./turn-queue";
 export { setToolsServer } from "./turn-queue";
 
 // Streaming session exports (for bot.ts interrupt support)
-export { getStreamingSession } from "./streaming-session";
+export { getStreamingSession, getAllStreamingSessions } from "./streaming-session";
 export type { TypingCallback } from "./streaming-session";

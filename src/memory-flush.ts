@@ -24,8 +24,7 @@ import { BOT_NAME } from "./config/identity";
 let memoryFlushInProgress = false;
 
 // Constants
-const SOFT_THRESHOLD_TOKENS = 200000; // 200k tokens - snapshot memories to disk (lowered to ensure context is saved before cache-aware restarts)
-const MEMORY_FLUSH_BUFFER = 100000; // Flush every 100k after threshold (200k, 300k, 400k, ...)
+import { SOFT_FLUSH_THRESHOLD, FLUSH_BUFFER } from "./config/context-window";
 
 /**
  * Read recent entries from a transcript file for memory flush context.
@@ -103,9 +102,17 @@ Review the conversation above and update your knowledge:
    - Significant relationship moments (format: {"who", "what", "when", "weight", "context_type"})
    - Only log meaningful moments, not routine exchanges
 
+5. **Session Summary** (agent-data/session-summary.md)
+   - OVERWRITE (not append) — this is only for session reconstruction after a restart
+   - Who was active in the conversation (names, not IDs)
+   - What topics/threads were being discussed
+   - The general tone/vibe (casual banter, heated debate, someone needs help, etc.)
+   - Do NOT include commitments or promises — those cannot survive a restart
+   - Keep it under 500 words
+
 Think about: What would future-you want to know from this conversation?
 
-If genuinely nothing worth saving, reply: [NO_REPLY]`;
+If genuinely nothing worth saving (besides the session summary), reply: [NO_REPLY]`;
 
 /**
  * Check if memory flush should be triggered based on token usage.
@@ -116,14 +123,14 @@ export async function shouldTriggerMemoryFlush(sessionData: SessionData): Promis
   const lastFlushTokenCount = sessionData.lastMemoryFlushTokenCount ?? 0;
 
   // Check if we're above the soft threshold
-  const aboveThreshold = totalTokens >= SOFT_THRESHOLD_TOKENS;
+  const aboveThreshold = totalTokens >= SOFT_FLUSH_THRESHOLD;
 
   // Check if we've accumulated enough tokens since the last flush
   const accumulatedSinceLastFlush = totalTokens - lastFlushTokenCount;
-  const hasEnoughNewTokens = accumulatedSinceLastFlush >= MEMORY_FLUSH_BUFFER;
+  const hasEnoughNewTokens = accumulatedSinceLastFlush >= FLUSH_BUFFER;
 
   if (aboveThreshold && hasEnoughNewTokens) {
-    log("SDK", `Memory flush triggered: ${totalTokens} tokens (threshold: ${SOFT_THRESHOLD_TOKENS}, last flush at: ${lastFlushTokenCount})`);
+    log("SDK", `Memory flush triggered: ${totalTokens} tokens (threshold: ${SOFT_FLUSH_THRESHOLD}, last flush at: ${lastFlushTokenCount})`);
     return true;
   }
 
@@ -198,6 +205,7 @@ Be efficient - only update files if there's something genuinely new to record. R
       options: {
         cwd: PROJECT_DIR,
         model: "claude-sonnet-4-6", // Isolated session — only needs to save memories, not converse
+        effort: "low", // Structured task with clear instructions
         // NO resume - run isolated with just the recent transcript summary
         systemPrompt: memoryFlushSystemPrompt,
         settingSources: ["project"],

@@ -8,7 +8,10 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { PROJECT_DIR, TRANSCRIPTS_DIR } from "./paths";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { PROJECT_DIR, TRANSCRIPTS_DIR, AGENT_DATA_DIR } from "./paths";
+import { MODEL, COLD_RESUME_TOKEN_THRESHOLD, HARD_RESTART_THRESHOLD } from "./config/context-window";
 import {
   appendToTranscript,
   getTranscriptPath,
@@ -59,6 +62,7 @@ import { BOT_NAME_LOWER } from "./config/identity";
 import { getHooks } from "./extensions/loader";
 import {
   getStreamingSession,
+  getAllStreamingSessions,
   type TypingCallback,
   type ResponseBoundary,
 } from "./streaming-session";
@@ -128,12 +132,13 @@ export async function executeTurn(
   }
 
   // Determine if this is a continuation of an existing streaming session
-  const session = getStreamingSession(options.isCreator);
+  // Creator DM = creator + not group DM (separate session to prevent DM/group context leaks)
+  const isCreatorDm = options.isCreator && !options.isGroupDm;
+  const session = getStreamingSession(options.isCreator, isCreatorDm);
 
   // Cache-aware restart: if session is large and cache is likely cold (>5 min idle),
   // start fresh instead of paying full input token cost on a stale session.
   const CACHE_TTL_MS = 5 * 60 * 1000;
-  const COLD_RESUME_TOKEN_THRESHOLD = 200_000;
   if (session.isAlive()) {
     const lastActivity = session.lastActivityTimestamp();
     const idleMs = lastActivity > 0 ? Date.now() - lastActivity : 0;
@@ -158,16 +163,36 @@ export async function executeTurn(
 
   // Take mtime snapshot after building context so subsequent turns can detect changes
   if (!hasSessionSnapshot()) {
-    snapshotSessionMtimes(userIds);
+    await snapshotSessionMtimes(userIds);
   }
 
-  // Build prompt
-  let prompt = buildDiscordResponsePrompt(dynamicContext, options);
+  // Build prompt (slim on continuation turns, full drift reminder every 10 turns)
+  const turnNum = session.turnCount;
+  let prompt = buildDiscordResponsePrompt(dynamicContext, options, turnNum);
+  const driftIncluded = turnNum <= 1 || turnNum % 10 === 0;
+  log("SDK", `Prompt built (turn ${turnNum}, ${prompt.length} chars${driftIncluded ? ", +drift reminder" : ""})`);
 
-  // Cold-start instruction: when there's no existing session, Greg has no
-  // conversational memory — remind him to verify claims with search_transcripts.
+  // Session reconstruction: on cold start, load session summary if available.
+  // This gives Greg continuity about who was talking and what was happening.
   if (!isStreamingContinuation) {
-    prompt += `\n\n**[Cold start]** You've just been restarted — you have NO session memory beyond the recent messages above. Before attributing statements to people or engaging deeply with an ongoing topic, use search_transcripts to verify context you're unsure about. Don't guess who said what.`;
+    const summaryPath = path.join(AGENT_DATA_DIR, "session-summary.md");
+    let sessionSummary: string | null = null;
+    try {
+      const content = await fs.readFile(summaryPath, "utf-8");
+      if (content.trim().length > 0) {
+        sessionSummary = content.trim();
+        // Delete after loading — it's a one-shot reconstruction artifact
+        await fs.unlink(summaryPath).catch(() => {});
+      }
+    } catch {
+      // No summary file — normal for first boot or clean shutdown
+    }
+
+    if (sessionSummary) {
+      prompt += `\n\n**[Session reconstructed]** Your previous session ended. Here's what was happening:\n\n${sessionSummary}\n\nThis summary is from your last memory flush — details may be slightly stale. Use search_transcripts to verify specifics before referencing them.`;
+    } else {
+      prompt += `\n\n**[Cold start]** You've just been restarted — you have NO session memory beyond the recent messages above. Before attributing statements to people or engaging deeply with an ongoing topic, use search_transcripts to verify context you're unsure about. Don't guess who said what.`;
+    }
   }
 
   const persona = await loadPersona();
@@ -197,12 +222,13 @@ export async function executeTurn(
     const systemPromptConfig = extPrompt ?? buildSystemPromptConfig(persona);
     session.start({
       cwd: PROJECT_DIR,
-      model: "claude-sonnet-4-6",
+      model: MODEL,
       systemPrompt: systemPromptConfig,
       allowedTools,
       ...(accessHooks ? { hooks: accessHooks } : {}),
       mcpServers: toolsServer ? { "custom-tools": toolsServer } : undefined,
       maxBudgetUsd: 20.0, // Session-lifetime cap (safety net, not per-turn)
+      effort: "medium", // Discord chatbot — needs tool selection and social reasoning
       resumeSessionId: resumeId,
       env: {
         KLIPY_API_KEY: process.env.KLIPY_API_KEY,
@@ -288,15 +314,33 @@ export async function executeTurn(
       } catch (err) {
         logError("SDK", "Failed to update token usage", err);
       }
+
+      // Log context window breakdown (categories: system prompt, tools, messages, etc.)
+      try {
+        const contextUsage = await session.getContextUsage();
+        if (contextUsage) {
+          const breakdown = contextUsage.categories
+            .filter((c) => c.tokens > 0)
+            .map((c) => `${c.name}: ${c.tokens}`)
+            .join(", ");
+          const raw = (contextUsage as { rawMaxTokens?: number }).rawMaxTokens;
+          const windowInfo = raw && raw !== contextUsage.maxTokens
+            ? `${contextUsage.maxTokens} (raw: ${raw})`
+            : String(contextUsage.maxTokens);
+          log("SDK", `Context breakdown (${contextUsage.percentage.toFixed(1)}% of ${windowInfo}): ${breakdown}`);
+        }
+      } catch {
+        // getContextUsage may not be available on all session states
+      }
     }
 
     try {
       if (activeSessionId) {
         const sessionData = await loadSessionData();
         const currentTokens = sessionData?.totalTokens ?? 0;
-        // Hard restart at 700k: memory flush snapshots at 400k but session
-        // continues for better continuity. Restart at 700k before context pressure.
-        if (currentTokens >= 700000) {
+        // Hard restart: memory flush snapshots earlier but session
+        // continues for better continuity. Restart before context pressure.
+        if (currentTokens >= HARD_RESTART_THRESHOLD) {
           log("SDK", `[STREAMING] Token threshold reached (${currentTokens}) — will restart session`);
           session.close();
           setCurrentSessionId(undefined);
@@ -310,11 +354,12 @@ export async function executeTurn(
             setCurrentSessionId(undefined);
             resetSessionSnapshot();
             rollHypothesisInclusion();
-            // If persona/patterns changed, close BOTH sessions
-            const otherSession = options.isCreator ? getStreamingSession(false) : getStreamingSession(true);
-            if (otherSession.isAlive()) {
-              log("SDK", "[STREAMING] Also restarting the other session (shared context changed)");
-              otherSession.close();
+            // If persona/patterns changed, close ALL other sessions
+            for (const other of getAllStreamingSessions()) {
+              if (other !== session && other.isAlive()) {
+                log("SDK", `[STREAMING] Also restarting ${other.label} session (shared context changed)`);
+                other.close();
+              }
             }
           }
         }
@@ -324,7 +369,12 @@ export async function executeTurn(
     }
 
     // ---- Post-turn Haiku reviewer (ReAct Observe step) ----
-    if (response.length >= 20 && !options.isFollowUp) {
+    // DISABLED 2026-03-31: ReAct loop causes more problems than it solves.
+    // Stats (March 2026): 42 triggers, 7 (17%) sent replacements (mostly GIFs),
+    // 28 (67%) did tool calls but sent nothing (wasted), 9 timed out causing
+    // duplicate messages and search spirals. Set to true to re-enable.
+    const REACT_LOOP_ENABLED = false;
+    if (REACT_LOOP_ENABLED && response.length >= 20 && !options.isFollowUp) {
       const visible = response.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
       const hasVisibleResponse = visible.length >= 20 && visible !== "[NO_RESPONSE]";
       const toolsUsedButNoResponse = toolNamesUsed.size > 0 && (visible === "[NO_RESPONSE]" || visible.length < 20);
@@ -401,6 +451,9 @@ export async function executeTurn(
             }
           } catch (err) {
             warn("SDK", `[STREAMING] ReAct iteration ${reactIteration} failed: ${err instanceof Error ? err.message : String(err)}`);
+            // Interrupt the SDK to stop in-flight tool calls (e.g. send_to_channel)
+            // from executing after we've given up on this iteration.
+            await session.interrupt();
             // Do NOT reset sentReplacement — if a replacement was already delivered to Discord, that can't be undone
             break;
           }
@@ -566,6 +619,7 @@ async function executeForkTurn(
       options: {
         cwd: PROJECT_DIR,
         model: "haiku",
+        effort: "low", // Forked followup — quick task
         resume: sessionId,
         forkSession: true,
         systemPrompt: systemPromptConfig,

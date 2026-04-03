@@ -260,6 +260,7 @@ Recent speakers: ${input.recentSpeakers.join(", ") || "unknown"}`;
         options: {
           cwd: PROJECT_DIR,
           model: "haiku",
+          effort: "low", // Quick yes/no assessment
           systemPrompt,
           allowedTools: [],
           settingSources: [],

@@ -6,13 +6,12 @@ import { startAuditWatcher, stopAuditWatcher } from "./audit";
 import { initTypingTracker } from "./typing";
 import { log, error } from "./log";
 import { createToolsServer } from "./custom-tools";
-import { setToolsServer } from "./agent";
+import { setToolsServer, getAllStreamingSessions } from "./agent";
 import { initTranscriptIndex, closeTranscriptIndex, setDmChannelId } from "./transcript-index";
 import { parseArgs } from "util";
 import { BOT_NAME } from "./config/identity";
 import { channelId, userId } from "./agent-types";
 import { cancelMessage, cancelQueuedMessage } from "./turn-queue";
-import { getStreamingSession } from "./agent";
 import { getCurrentlyProcessingMessageId, interruptCurrentMessage } from "./bot";
 import { initExtensions, stopExtensions } from "./extensions/loader";
 
@@ -223,10 +222,23 @@ async function gracefulShutdown(signal: string) {
   stopExtensions();
   closeTranscriptIndex();
 
+  // Delete session summary — stale summaries from hours/days ago shouldn't
+  // be loaded on next boot. Only mid-conversation restarts benefit from reconstruction.
+  try {
+    const { AGENT_DATA_DIR } = await import("./paths");
+    const { unlink } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await unlink(join(AGENT_DATA_DIR, "session-summary.md"));
+    log("SHUTDOWN", "Deleted session-summary.md");
+  } catch {
+    // File doesn't exist or already deleted — fine
+  }
+
   // Close streaming sessions before process.exit so the output consumer
   // sees _alive=false and doesn't log a spurious error.
-  getStreamingSession(true).close();
-  getStreamingSession(false).close();
+  for (const session of getAllStreamingSessions()) {
+    session.close();
+  }
 
   // Send a goodbye message to the group DM
   const groupChannelId = process.env.PRIMARY_CHANNEL_ID;

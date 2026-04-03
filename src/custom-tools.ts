@@ -21,7 +21,7 @@ import { sendWithTypingSimulation } from "./typing";
 import { executeFollowup, canScheduleFollowup, getActiveFollowupCount } from "./followup-executor";
 import { log, warn, error as logError } from "./log";
 import { searchTranscripts, formatSearchResults, getSearchContext, getSearchContextForSession, getDmChannelId, searchByConcept, formatConceptResults } from "./transcript-index";
-import { getStreamingSession } from "./streaming-session";
+import { getAllStreamingSessions } from "./streaming-session";
 import { recordBotActivity } from "./conversation";
 import { channelId as toChannelId } from "./agent-types";
 import { AGENT_DATA_DIR } from "./paths";
@@ -51,7 +51,7 @@ const REVIEWER_META: Record<string, ToolReviewerMeta> = {
     additive: true,
   },
   search_transcripts: {
-    reviewerHint: "Someone asked about a SPECIFIC past conversation or event ('remember when...', 'you said...', 'didn't you talk to [person]?') and search_transcripts wasn't used. ALSO flag if the bot attributes a specific statement or opinion to a named person ('X mentioned...', 'X said...', 'X brought up...') without having searched transcripts to verify the attribution — misattribution is worse than not attributing at all. Do NOT flag for: rhetorical questions, banter, or roasts ('when have you ever...', 'since when does X...'); casual greetings or small talk; the bot mentioning its own status (being offline, restarting, etc.) — none of these need transcript lookup.",
+    reviewerHint: "Someone asked about a SPECIFIC past conversation or event ('remember when...', 'you said...', 'didn't you talk to [person]?') and search_transcripts wasn't used. ALSO flag if the bot attributes a specific statement or opinion to a named person ('X mentioned...', 'X said...', 'X brought up...') without having searched transcripts to verify the attribution — misattribution is worse than not attributing at all. Do NOT flag for: rhetorical questions, banter, or roasts ('when have you ever...', 'since when does X...'); casual greetings or small talk; the bot mentioning its own status (being offline, restarting, etc.); image/visual content requests ('what's in this image?', 'look at this') where the bot describes what it sees — the image data is already available, no transcript search needed; attributing statements visible in the current message context (recent channel history) rather than from past conversations — none of these need transcript lookup.",
   },
   get_reaction_stats: {
     reviewerHint: "Someone asked about reaction data, which messages land best, engagement patterns, or GIF vs text performance, and get_reaction_stats wasn't used. Do NOT flag for casual banter about reactions or rhetorical questions.",
@@ -434,13 +434,10 @@ Returns snippets ranked by relevance. If keyword search returns 0 results, conce
         async (args) => {
           try {
             // Use session-keyed context to avoid race conditions
-            // between concurrent creator/public sessions
-            const creatorSess = getStreamingSession(true);
-            const publicSess = getStreamingSession(false);
+            // between concurrent sessions (creator-dm, creator-group, public)
+            const allSessions = getAllStreamingSessions();
             // Check which session is active (non-idle)
-            const activeSession = !creatorSess.isIdle() && creatorSess.sessionId
-              ? creatorSess
-              : (!publicSess.isIdle() && publicSess.sessionId ? publicSess : null);
+            const activeSession = allSessions.find(s => !s.isIdle() && s.sessionId) ?? null;
             const searchCtx = activeSession?.sessionId
               ? getSearchContextForSession(activeSession.sessionId) ?? getSearchContext()
               : getSearchContext();

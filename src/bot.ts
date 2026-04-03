@@ -1,7 +1,7 @@
 import type { Client, Message, Typing, MessageReaction, User } from "./discord";
 import { isChannelDM, isChannelGroupDM, getGroupDmRecipients } from "./discord";
-import { formatDiscordContext, buildMessageContentBlocks } from "./discord-formatting";
-import { processWithAgent, getStreamingSession } from "./agent";
+import { formatDiscordContext, buildMessageContentBlocks, hasAttachments, getImageSource } from "./discord-formatting";
+import { processWithAgent, getStreamingSession, getAllStreamingSessions } from "./agent";
 import { resetIdleTimer } from "./idle";
 import { checkForInjection, sanitizeInput } from "./security";
 import {
@@ -131,6 +131,7 @@ async function shouldDropStaleResponse(
       options: {
         cwd: PROJECT_DIR,
         model: "haiku",
+        effort: "low", // Quick relevance check
         systemPrompt: STALENESS_SYSTEM_PROMPT,
         allowedTools: [],
         abortController,
@@ -268,7 +269,7 @@ async function validateChannel(
   // Non-creator image-only messages are always dropped (creator can reply to them to trigger image processing).
   const IMAGES_ENABLED = process.env.DISABLE_IMAGES !== "1";
   const isCreatorMsg = msgUserId === config.creatorId;
-  if (!message.content.trim() && (message.attachments.size > 0 || message.embeds.length > 0)) {
+  if (!message.content.trim() && hasAttachments(message)) {
     if (!IMAGES_ENABLED || !isCreatorMsg) {
       log("MSG", `Ignoring image/attachment-only message from ${message.author.username}${IMAGES_ENABLED ? " (non-creator)" : ""}`);
       return null;
@@ -399,7 +400,7 @@ async function executePipeline(
   const isCreator = msgUserId === config.creatorId;
 
   // Use delta context on continuation turns (session already has prior messages)
-  const session = getStreamingSession(isCreator);
+  const session = getStreamingSession(isCreator, validation.isCreatorDm);
   const sessionAlive = session.isAlive();
   if (!sessionAlive) {
     // Session dead/restarting — clear watermark so fresh session gets full context
@@ -423,19 +424,22 @@ async function executePipeline(
       .filter((b): b is Extract<typeof b, { type: "image" }> => b.type === "image");
 
     // Reply-to-extract: pull images from the referenced message when the creator's own message has none.
+    // Handles forwarded messages (attachments in messageSnapshots via getImageSource).
     if (imageBlocks.length === 0 && message.reference?.messageId) {
       try {
         const refMsg = await message.channel.messages.fetch(message.reference.messageId);
-        if (refMsg.attachments.size > 0 || refMsg.embeds.length > 0) {
+        if (hasAttachments(refMsg)) {
           const refBlocks = await buildMessageContentBlocks(refMsg, discordContext);
           imageBlocks = refBlocks
             .filter((b): b is Extract<typeof b, { type: "image" }> => b.type === "image");
           if (imageBlocks.length > 0) {
             log("IMAGE", `Extracted ${imageBlocks.length} image(s) from referenced message ${refMsg.id}`);
+          } else {
+            warn("IMAGE", `Reply-to-extract: ref msg had attachments/embeds but no images extracted`);
           }
         }
-      } catch {
-        // Couldn't fetch referenced message, skip image extraction
+      } catch (err) {
+        warn("IMAGE", `Reply-to-extract failed for ref ${message.reference.messageId}: ${err}`);
       }
     }
   }
@@ -842,15 +846,11 @@ export function getCurrentlyProcessingMessageId(): string | null {
 export function interruptCurrentMessage(): void {
   if (!currentlyProcessingMessageId) return;
 
-  // Interrupt both sessions — we don't know which one is processing.
-  // The idle one will be a no-op.
-  const creator = getStreamingSession(true);
-  const pub = getStreamingSession(false);
-
-  if (!creator.isIdle() && creator.isAlive()) {
-    creator.interrupt().catch(() => {});
-  }
-  if (!pub.isIdle() && pub.isAlive()) {
-    pub.interrupt().catch(() => {});
+  // Interrupt all sessions — we don't know which one is processing.
+  // The idle ones will be a no-op.
+  for (const session of getAllStreamingSessions()) {
+    if (!session.isIdle() && session.isAlive()) {
+      session.interrupt().catch(() => {});
+    }
   }
 }
